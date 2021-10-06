@@ -5,6 +5,7 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-default-run = "mocword_download"
+default-run = "mocword"
 
 [dependencies]
+diesel = { version = "1.4.4", features = ["sqlite"] }
