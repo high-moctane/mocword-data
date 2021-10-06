@@ -3,7 +3,7 @@ WORKDIR /proj
 COPY . .
 RUN cargo build --release --bin mocword_download
 
-FROM debian:stable-slim
+FROM debian:bullseye-slim
 WORKDIR /proj
 COPY --from=builder /proj/target/release/mocword_download .
 CMD ["./mocword_download", "download.sqlite"]
