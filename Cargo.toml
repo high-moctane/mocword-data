@@ -8,4 +8,4 @@ edition = "2018"
 default-run = "mocword"
 
 [dependencies]
-diesel = { version = "1.4.4", features = ["sqlite"] }
+diesel = { version = "1.4", features = ["sqlite"] }
