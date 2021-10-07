@@ -122,7 +122,7 @@ create unique index idx_five_gram_entries on five_gram_entries(five_gram_id, yea
 
 create table fetched_data (
     n   int not null,
-    idx int not null
-);
+    idx int not null,
 
-create unique index idx_fetched_data on fetched_data(n, idx);
+    primary key(n, idx)
+);
