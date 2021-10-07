@@ -1,3 +1,7 @@
+extern crate mocword;
+
+use crate::mocword::download;
+
 fn main() {
-    println!("Hello, mocword_download!");
+    download::download();
 }
