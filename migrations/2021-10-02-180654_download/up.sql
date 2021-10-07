@@ -120,7 +120,7 @@ create table five_gram_entries (
 
 create unique index idx_five_gram_entries on five_gram_entries(five_gram_id, year);
 
-create table fetched_data (
+create table fetched_files (
     n   int not null,
     idx int not null,
 
