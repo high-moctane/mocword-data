@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
-use flate2::read::GzDecoder;
+use flate2::bufread::GzDecoder;
 use std::io::prelude::*;
+use std::io::BufReader;
 
-use reqwest::get;
+use reqwest;
 
 pub fn download() -> Result<()> {
     for n in 1..=5 {
@@ -34,12 +35,24 @@ fn file_url(n: i8, idx: i16) -> String {
     )
 }
 
-async fn download_file(n: i8, idx: i16) -> Result<()> {
+fn download_file(n: i8, idx: i16) -> Result<()> {
     let url = file_url(n, idx);
 
-    let body = reqwest::get(url).await?;
+    let resp = reqwest::blocking::get(url)?;
+    let br = BufReader::new(resp);
+    let mut gz = GzDecoder::new(br);
+    let r = BufReader::new(gz);
 
-    let mut d: GzDecoder<Box<dyn Read>> = GzDecoder::new(Box::new::<dyn Read>(body.into()));
+    for line in r.lines() {
+        let line = line?;
+        let v: Vec<&str> = line.split("\t").collect();
+        assert_eq!(v.len(), 2);
+        let ngram = v[0];
+        let entries: Vec<Vec<&str>> = v[1]
+            .split(" ")
+            .map(|entry| entry.split(",").collect())
+            .collect();
+    }
 
     Ok(())
 }
