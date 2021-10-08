@@ -8,4 +8,8 @@ edition = "2018"
 default-run = "mocword"
 
 [dependencies]
+anyhow = "1.0"
 diesel = { version = "1.4", features = ["sqlite"] }
+flate2 = "1.0"
+reqwest = "0.11"
+thiserror = "1.0"
