@@ -11,5 +11,5 @@ default-run = "mocword"
 anyhow = "1.0"
 diesel = { version = "1.4", features = ["sqlite"] }
 flate2 = "1.0"
-reqwest = "0.11"
+reqwest = { version = "0.11", features = ["blocking"] }
 thiserror = "1.0"
