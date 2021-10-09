@@ -7,8 +7,8 @@ table! {
 
 table! {
     five_gram_entries (id) {
-        id -> Integer,
-        five_gram_id -> Integer,
+        id -> BigInt,
+        five_gram_id -> BigInt,
         year -> Integer,
         match_count -> Integer,
         volume_count -> Integer,
@@ -17,19 +17,19 @@ table! {
 
 table! {
     five_grams (id) {
-        id -> Integer,
-        word1_id -> Integer,
-        word2_id -> Integer,
-        word3_id -> Integer,
-        word4_id -> Integer,
-        word5_id -> Integer,
+        id -> BigInt,
+        word1_id -> BigInt,
+        word2_id -> BigInt,
+        word3_id -> BigInt,
+        word4_id -> BigInt,
+        word5_id -> BigInt,
     }
 }
 
 table! {
     four_gram_entries (id) {
-        id -> Integer,
-        four_gram_id -> Integer,
+        id -> BigInt,
+        four_gram_id -> BigInt,
         year -> Integer,
         match_count -> Integer,
         volume_count -> Integer,
@@ -38,18 +38,18 @@ table! {
 
 table! {
     four_grams (id) {
-        id -> Integer,
-        word1_id -> Integer,
-        word2_id -> Integer,
-        word3_id -> Integer,
-        word4_id -> Integer,
+        id -> BigInt,
+        word1_id -> BigInt,
+        word2_id -> BigInt,
+        word3_id -> BigInt,
+        word4_id -> BigInt,
     }
 }
 
 table! {
     one_gram_entries (id) {
-        id -> Integer,
-        one_gram_id -> Integer,
+        id -> BigInt,
+        one_gram_id -> BigInt,
         year -> Integer,
         match_count -> Integer,
         volume_count -> Integer,
@@ -58,15 +58,15 @@ table! {
 
 table! {
     one_grams (id) {
-        id -> Integer,
-        word1_id -> Integer,
+        id -> BigInt,
+        word1_id -> BigInt,
     }
 }
 
 table! {
     three_gram_entries (id) {
-        id -> Integer,
-        three_gram_id -> Integer,
+        id -> BigInt,
+        three_gram_id -> BigInt,
         year -> Integer,
         match_count -> Integer,
         volume_count -> Integer,
@@ -75,17 +75,17 @@ table! {
 
 table! {
     three_grams (id) {
-        id -> Integer,
-        word1_id -> Integer,
-        word2_id -> Integer,
-        word3_id -> Integer,
+        id -> BigInt,
+        word1_id -> BigInt,
+        word2_id -> BigInt,
+        word3_id -> BigInt,
     }
 }
 
 table! {
     two_gram_entries (id) {
-        id -> Integer,
-        two_gram_id -> Integer,
+        id -> BigInt,
+        two_gram_id -> BigInt,
         year -> Integer,
         match_count -> Integer,
         volume_count -> Integer,
@@ -94,15 +94,15 @@ table! {
 
 table! {
     two_grams (id) {
-        id -> Integer,
-        word1_id -> Integer,
-        word2_id -> Integer,
+        id -> BigInt,
+        word1_id -> BigInt,
+        word2_id -> BigInt,
     }
 }
 
 table! {
     words (id) {
-        id -> Integer,
+        id -> BigInt,
         word -> Text,
     }
 }
