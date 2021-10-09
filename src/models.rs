@@ -1,13 +1,29 @@
+use super::schema::one_gram_entries;
+use super::schema::one_grams;
+use super::schema::words;
+
 #[derive(Queryable)]
 pub struct Word {
     pub id: i64,
     pub word: String,
 }
 
+#[derive(Insertable)]
+#[table_name = "words"]
+pub struct NewWord<'a> {
+    pub word: &'a str,
+}
+
 #[derive(Queryable)]
 pub struct OneGram {
     pub id: i64,
-    pub word1: i64,
+    pub word1_id: i64,
+}
+
+#[derive(Insertable)]
+#[table_name = "one_grams"]
+pub struct NewOngGram {
+    pub word1_id: i64,
 }
 
 #[derive(Queryable)]
@@ -16,6 +32,16 @@ pub struct OneGramEntries {
     pub one_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
+    pub volume_count: i64,
+}
+
+#[derive(Insertable)]
+#[table_name = "one_gram_entries"]
+pub struct NewOngGramEntry {
+    pub one_gram_id: i64,
+    pub year: i16,
+    pub match_count: i64,
+    pub volume_count: i64,
 }
 
 #[derive(Queryable)]
