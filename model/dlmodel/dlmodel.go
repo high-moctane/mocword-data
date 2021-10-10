@@ -1,12 +1,16 @@
 package dlmodel
 
+type Ngram interface {
+	ngram()
+}
+
+type Entry interface {
+	entry()
+}
+
 type Word struct {
 	ID   int64
 	Word string `gorm:"not null;unique"`
-}
-
-func (wo Word) GetID() int64 {
-	return wo.ID
 }
 
 type OneGram struct {
@@ -15,9 +19,7 @@ type OneGram struct {
 	Word1   Word
 }
 
-func (og OneGram) GetID() int64 {
-	return og.ID
-}
+func (OneGram) ngram() {}
 
 type OneGramEntry struct {
 	ID          int64
@@ -28,9 +30,7 @@ type OneGramEntry struct {
 	VolumeCount int64 `gorm:"not null"`
 }
 
-func (oge OneGramEntry) GetID() int64 {
-	return oge.ID
-}
+func (OneGramEntry) entry() {}
 
 type TwoGram struct {
 	ID      int64
@@ -40,9 +40,7 @@ type TwoGram struct {
 	Word2   Word
 }
 
-func (tg TwoGram) GetID() int64 {
-	return tg.ID
-}
+func (TwoGram) ngram() {}
 
 type TwoGramEntry struct {
 	ID          int64
@@ -53,9 +51,7 @@ type TwoGramEntry struct {
 	VolumeCount int64 `gorm:"not null"`
 }
 
-func (tge TwoGramEntry) GetID() int64 {
-	return tge.ID
-}
+func (TwoGramEntry) entry() {}
 
 type ThreeGram struct {
 	ID      int64
@@ -67,9 +63,7 @@ type ThreeGram struct {
 	Word3   Word
 }
 
-func (tg ThreeGram) GetID() int64 {
-	return tg.ID
-}
+func (ThreeGram) ngram() {}
 
 type ThreeGramEntry struct {
 	ID          int64
@@ -80,9 +74,7 @@ type ThreeGramEntry struct {
 	VolumeCount int64 `gorm:"not null"`
 }
 
-func (tge ThreeGramEntry) GetID() int64 {
-	return tge.ID
-}
+func (ThreeGramEntry) entry() {}
 
 type FourGram struct {
 	ID      int64
@@ -96,9 +88,7 @@ type FourGram struct {
 	Word4   Word
 }
 
-func (fg FourGram) GetID() int64 {
-	return fg.ID
-}
+func (FourGram) ngram() {}
 
 type FourGramEntry struct {
 	ID          int64
@@ -109,9 +99,7 @@ type FourGramEntry struct {
 	VolumeCount int64 `gorm:"not null"`
 }
 
-func (fge FourGramEntry) GetID() int64 {
-	return fge.ID
-}
+func (FourGramEntry) entry() {}
 
 type FiveGram struct {
 	ID      int64
@@ -127,9 +115,7 @@ type FiveGram struct {
 	Word5   Word
 }
 
-func (fg FiveGram) GetID() int64 {
-	return fg.ID
-}
+func (FiveGram) ngram() {}
 
 type FiveGramEntry struct {
 	ID          int64
@@ -140,11 +126,9 @@ type FiveGramEntry struct {
 	VolumeCount int64 `gorm:"not null"`
 }
 
-func (fge FiveGramEntry) GetID() int64 {
-	return fge.ID
-}
+func (FiveGramEntry) entry() {}
 
-type Loaded struct {
+type Downloaded struct {
 	N   int `gorm:"not null;primary key"`
 	Idx int `gorm:"not null;primary key"`
 }
