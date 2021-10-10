@@ -97,7 +97,10 @@ func parseLineAndSave(ctx context.Context, db *gorm.DB, line string) error {
 		return fmt.Errorf("invalid ngram: %q", line)
 	}
 
-	entries := strings.Split(lineElem[1], " ")
+	entries, err := parseEntries(lineElem[1])
+	if err != nil {
+		return fmt.Errorf("invalid ngram: %w", err)
+	}
 	if len(entries) < 1 {
 		return fmt.Errorf("empty entries: %q", line)
 	}
@@ -114,7 +117,42 @@ func parseLineAndSave(ctx context.Context, db *gorm.DB, line string) error {
 	return nil
 }
 
-func saveNgram(ctx context.Context, db *gorm.DB, ngram []string) (ngramModel model.ModelWithID, err error) {
+type Entry struct {
+	Year        int
+	MatchCount  int64
+	VolumeCount int64
+}
+
+func parseEntries(line string) ([]Entry, error) {
+	var res []Entry
+
+	for _, entry := range strings.Split(line, " ") {
+		elems := strings.Split(entry, ",")
+
+		if len(elems) != 3 {
+			return nil, fmt.Errorf("invalid entry %v", line)
+		}
+
+		year, err := strconv.Atoi(elems[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid entry %v: %w", line, err)
+		}
+		matchCount, err := strconv.ParseInt(elems[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid entry %v: %w", line, err)
+		}
+		volumeCount, err := strconv.ParseInt(elems[2], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid entry %v: %w", line, err)
+		}
+
+		res = append(res, Entry{year, matchCount, volumeCount})
+	}
+
+	return res, nil
+}
+
+func saveNgram(ctx context.Context, db *gorm.DB, ngram []string) (ngramModel dlmodel.Ngram, err error) {
 	var id int64
 	var wordIDs map[string]int64
 
@@ -270,6 +308,17 @@ func saveNgram(ctx context.Context, db *gorm.DB, ngram []string) (ngramModel mod
 	return
 }
 
+func ngramSelect(ctx context.Context, db *gorm.DB, wordIDs map[string]int64) (ngramModel dlmodel.Ngram, err error) {
+	switch len(wordIDs) {
+	case 1:
+
+	case 2:
+	case 3:
+	case 4:
+	case 5:
+	}
+}
+
 func saveWord(ctx context.Context, db *gorm.DB, word string) (id int64, err error) {
 	var wo dlmodel.Word
 
@@ -298,7 +347,7 @@ func saveWord(ctx context.Context, db *gorm.DB, word string) (id int64, err erro
 }
 
 func saveEntries(ctx context.Context, db *gorm.DB, ngramModel model.ModelWithID, entries []string) error {
-	for entry := range strings.Split(entries, " ") {
+	for _, entry := range entries {
 		for _, entElems := range strings.Split(entry, ",") {
 			if err := saveEntry(ctx, db, ngramModel, entElems); err != nil {
 				return fmt.Errorf("failed to save entries %v: %w", err)
@@ -312,19 +361,6 @@ func saveEntries(ctx context.Context, db *gorm.DB, ngramModel model.ModelWithID,
 func saveEntry(ctx context.Context, db *gorm.DB, ngramModel model.ModelWithID, entry []string) error {
 	if len(entElems) != 3 {
 		return fmt.Errorf("invalid entry len: %d", len(entElems))
-	}
-
-	year, err := strconv.Atoi(entElems[0])
-	if err != nil {
-		return fmt.Errorf("invalid entry %v: %w", err)
-	}
-	matchCount, err := strconv.ParseInt(entElems[1], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid entry %v: %w", err)
-	}
-	volumeCount, err := strconv.ParseInt(entElems[2], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid entry %v: %w", err)
 	}
 
 	var ent interface{}
