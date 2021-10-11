@@ -1,0 +1,6 @@
+/.git
+/Dockerfile*
+/LICENSE
+/build
+/docker-compose*
+/target
