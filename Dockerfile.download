@@ -1,0 +1,15 @@
+FROM rust:1.55
+
+WORKDIR /proj
+
+COPY Cargo.* .
+RUN set -xe \
+    && mkdir src \
+    && touch src/lib.rs \
+    && cargo build --release \
+    && true
+
+COPY . .
+RUN cargo build --release --bin mocword_download
+
+CMD ["cargo", "run", "--release", "--bin", "mocword_download"]
