@@ -1,0 +1,15 @@
+[package]
+name = "mocword"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+default-run = "mocword"
+
+[dependencies]
+anyhow = "1.0"
+diesel = { version = "1.4", features = ["sqlite"] }
+flate2 = "1.0"
+reqwest = { version = "0.11", features = ["blocking"] }
+thiserror = "1.0"
