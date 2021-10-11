@@ -1,12 +1,13 @@
 FROM rust:1.55
 
-WORKDIR /proj
+WORKDIR /mocword
 
 COPY Cargo.* .
 RUN set -xe \
     && mkdir src \
     && touch src/lib.rs \
     && cargo build --release \
+    && rm -rf src \
     && true
 
 COPY . .

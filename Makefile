@@ -2,9 +2,13 @@ DOCKER_COMPOSE_DOWNLOAD := docker-compose \
 		-f docker-compose.download.yml \
 		-p mocword_download
 
-.PHONY: run
-run:
+.PHONY: build
+build:
 
+
+.PHONY: build-download
+build-download:
+	$(DOCKER_COMPOSE_DOWNLOAD) build
 
 .PHONY: clean
 clean:
