@@ -1,7 +1,7 @@
 pragma foreign_keys = ON;
 
 create table words (
-    id   int not null primary key,
+    id   int  not null primary key,
     word text not null unique
 );
 
