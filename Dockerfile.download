@@ -6,7 +6,7 @@ COPY Cargo.* ./
 RUN set -xe \
     && mkdir src \
     && touch src/lib.rs \
-    && cargo build --release \
+    && cargo check \
     && rm -rf src \
     && true
 
