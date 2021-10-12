@@ -1,10 +1,8 @@
 use anyhow::Result;
-
 use diesel::prelude::*;
-
 use diesel::sqlite::SqliteConnection;
 
-use crate::models::*;
+use crate::models;
 use crate::schema;
 
 #[derive(Debug)]
@@ -67,18 +65,38 @@ fn gz_url(lang: &Language, n: i8, idx: i16) -> String {
 pub fn run() -> Result<()> {
     let conn = SqliteConnection::establish("build/download.sqlite")?;
 
-    let new_word = NewWord { word: "powa" };
-    let new_one_gram = NewOneGram { word1_id: 1 };
-
-    diesel::sql_query("pragma foreign_keys = on;").execute(&conn)?;
-
-    diesel::insert_into(schema::words::table)
-        .values(&new_word)
-        .execute(&conn)?;
-    diesel::insert_into(schema::one_grams::table)
-        .values(&new_one_gram)
-        .execute(&conn)?;
-
     println!("Hello, download!");
     Ok(())
+}
+
+type Ngram = Vec<String>;
+struct Entry(i16, i64, i64);
+
+fn save_line(conn: &SqliteConnection, line: &str) -> Result<()> {
+    unimplemented!();
+
+    let (ngram, entries) = parse_line(line)?;
+    let ngram_record = save_ngram(conn, &ngram)?;
+    save_entries(conn, &ngram_record, &entries)?;
+}
+
+fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
+    unimplemented!();
+}
+
+fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<models::Ngram> {
+    let word_records = save_words(conn, ngram)?;
+    unimplemented!();
+}
+
+fn save_words<'a>(conn: &'a SqliteConnection, ngram: &'a Ngram) -> Result<Vec<models::Word<'a>>> {
+    unimplemented!();
+}
+
+fn save_entries(
+    conn: &SqliteConnection,
+    ngram_record: &models::Ngram,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    unimplemented!();
 }
