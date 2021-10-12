@@ -1,6 +1,7 @@
 use anyhow::Result;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use thiserror::Error;
 
 use crate::models;
 use crate::schema;
@@ -69,7 +70,9 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-type Ngram = Vec<String>;
+type Ngram<'a> = Vec<&'a str>;
+
+#[derive(Debug, PartialEq, Eq)]
 struct Entry(i16, i64, i64);
 
 fn save_line(conn: &SqliteConnection, line: &str) -> Result<()> {
@@ -80,8 +83,50 @@ fn save_line(conn: &SqliteConnection, line: &str) -> Result<()> {
     save_entries(conn, &ngram_record, &entries)?;
 }
 
+#[derive(Debug, Error)]
+pub enum DownloadError {
+    #[error("invalid line: {0}")]
+    InvalidLine(String),
+
+    #[error("invalid entry: {0}")]
+    InvalidEntry(String),
+}
+
 fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
-    unimplemented!();
+    let ngram_entries: Vec<&str> = line.split("\t").collect();
+    if ngram_entries.len() != 2 {
+        return Err(DownloadError::InvalidLine(line.to_string()))?;
+    }
+
+    let ngram = parse_ngram(ngram_entries[0]);
+    let entries = parse_entries(ngram_entries[1])?;
+
+    Ok((ngram, entries))
+}
+
+fn parse_ngram<'a>(ngram_vec: &'a str) -> Vec<&'a str> {
+    ngram_vec.split(" ").collect()
+}
+
+fn parse_entries(entries_line: &str) -> Result<Vec<Entry>> {
+    let mut res = Vec::new();
+    for s in entries_line.split(" ") {
+        res.push(parse_entry(s)?);
+    }
+    Ok(res)
+}
+
+fn parse_entry(entry_str: &str) -> Result<Entry> {
+    let elems: Vec<&str> = entry_str.split(",").collect();
+    if elems.len() != 3 {
+        return Err(DownloadError::InvalidEntry(entry_str.to_string()))?;
+    }
+
+    Ok(Entry(
+        elems[0].parse()?,
+        elems[1].parse()?,
+        elems[2].parse()?,
+    ))
 }
 
 fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<models::Ngram> {
@@ -99,4 +144,32 @@ fn save_entries(
     entries: &Vec<Entry>,
 ) -> Result<()> {
     unimplemented!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_line() {
+        // OK
+        let input = "hello world\t2012,195943,849381 2013,598483,57483 2014,483584,4731";
+        let want_ngram: Vec<String> = vec!["hello".to_string(), "world".to_string()];
+        let want_entries = vec![
+            Entry(2012, 195943, 849381),
+            Entry(2013, 598483, 57483),
+            Entry(2014, 483584, 4731),
+        ];
+
+        let (got_ngram, got_entries) = parse_line(&input).unwrap();
+        assert_eq!(want_ngram.len(), got_ngram.len());
+        for i in 0..want_ngram.len() {
+            assert_eq!(want_ngram[i], got_ngram[i].to_string());
+        }
+        assert_eq!(&want_entries[..], &got_entries[..]);
+
+        // NG
+        assert!(parse_line("hello world 1773,2").is_err());
+        assert!(parse_line("hello world 1773,2,5 143").is_err());
+    }
 }
