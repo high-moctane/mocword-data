@@ -29,7 +29,6 @@ pub struct NewOneGram {
 
 #[derive(Queryable)]
 pub struct OneGramEntry {
-    pub id: i64,
     pub one_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
@@ -59,7 +58,6 @@ pub struct NewTwoGram {
 
 #[derive(Queryable)]
 pub struct TwoGramEntry {
-    pub id: i64,
     pub two_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
@@ -89,7 +87,6 @@ pub struct NewThreeGram {
 
 #[derive(Queryable)]
 pub struct ThreeGramEntry {
-    pub id: i64,
     pub three_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
@@ -119,7 +116,6 @@ pub struct NewFourGram {
 
 #[derive(Queryable)]
 pub struct FourGramEntry {
-    pub id: i64,
     pub four_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
@@ -149,7 +145,6 @@ pub struct NewFiveGram {
 
 #[derive(Queryable)]
 pub struct FiveGramEntry {
-    pub id: i64,
     pub five_gram_id: i64,
     pub year: i16,
     pub match_count: i64,
