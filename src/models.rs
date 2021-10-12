@@ -3,6 +3,14 @@ use crate::schema::{
     one_grams, three_gram_entries, three_grams, two_gram_entries, two_grams, words,
 };
 
+pub union Ngram {
+    one_gram: OneGram,
+    two_gram: TwoGram,
+    three_gram: ThreeGram,
+    four_gram: FourGram,
+    five_gram: FiveGram,
+}
+
 #[derive(Queryable)]
 pub struct Word<'a> {
     pub id: i64,
@@ -15,7 +23,7 @@ pub struct NewWord<'a> {
     pub word: &'a str,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Copy, Clone)]
 pub struct OneGram {
     pub id: i64,
     pub word1_id: i64,
@@ -44,7 +52,7 @@ pub struct NewOneGramEntry {
     pub volume_count: i64,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Copy, Clone)]
 pub struct TwoGram {
     pub id: i64,
     pub word1_id: i64,
@@ -73,7 +81,7 @@ pub struct NewTwoGramEntry {
     pub volume_count: i64,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Copy, Clone)]
 pub struct ThreeGram {
     pub id: i64,
     pub word1_id: i64,
@@ -102,7 +110,7 @@ pub struct NewThreeGramEntry {
     pub volume_count: i64,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Copy, Clone)]
 pub struct FourGram {
     pub id: i64,
     pub word1_id: i64,
@@ -131,7 +139,7 @@ pub struct NewFourGramEntry {
     pub volume_count: i64,
 }
 
-#[derive(Queryable)]
+#[derive(Queryable, Copy, Clone)]
 pub struct FiveGram {
     pub id: i64,
     pub word1_id: i64,
