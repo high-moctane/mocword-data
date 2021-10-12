@@ -1,31 +1,29 @@
-pragma foreign_keys = ON;
-
 create table words (
-    id   int  not null primary key,
-    word text not null unique
+    id   integer  primary key autoincrement,
+    word text     not null unique
 );
 
 create table one_grams (
-    id       int not null primary key,
-    word1_id int not null unique,
+    id       integer primary key autoincrement,
+    word1_id integer not null unique,
 
     constraint fk_one_grams_word1_id foreign key (word1_id) references words(id)
 );
 
 create table one_gram_entries (
-    one_gram_id  int not null,
-    year         int not null,
-    match_count  int not null,
-    volume_count int not null,
+    one_gram_id  integer not null,
+    year         integer not null,
+    match_count  integer not null,
+    volume_count integer not null,
 
     primary key(one_gram_id, year),
     constraint fk_one_gram_entries_one_gram_id foreign key (one_gram_id) references one_grams(id)
 );
 
 create table two_grams (
-    id       int not null primary key,
-    word1_id int not null,
-    word2_id int not null,
+    id       integer primary key autoincrement,
+    word1_id integer not null,
+    word2_id integer not null,
 
     constraint fk_two_grams_word1_id foreign key (word1_id) references words(id),
     constraint fk_two_grams_word2_id foreign key (word2_id) references words(id)
@@ -34,20 +32,20 @@ create table two_grams (
 create unique index idx_two_grams on two_grams(word1_id, word2_id);
 
 create table two_gram_entries (
-    two_gram_id  int not null,
-    year         int not null,
-    match_count  int not null,
-    volume_count int not null,
+    two_gram_id  integer not null,
+    year         integer not null,
+    match_count  integer not null,
+    volume_count integer not null,
 
     primary key(two_gram_id, year),
     constraint fk_two_gram_entries_two_gram_id foreign key (two_gram_id) references two_grams(id)
 );
 
 create table three_grams (
-    id       int not null primary key,
-    word1_id int not null,
-    word2_id int not null,
-    word3_id int not null,
+    id       integer primary key autoincrement,
+    word1_id integer not null,
+    word2_id integer not null,
+    word3_id integer not null,
 
     constraint fk_three_grams_word1_id foreign key (word1_id) references words(id),
     constraint fk_three_grams_word2_id foreign key (word2_id) references words(id),
@@ -57,21 +55,21 @@ create table three_grams (
 create unique index idx_three_grams on three_grams(word1_id, word2_id, word3_id);
 
 create table three_gram_entries (
-    three_gram_id int not null,
-    year          int not null,
-    match_count   int not null,
-    volume_count  int not null,
+    three_gram_id integer not null,
+    year          integer not null,
+    match_count   integer not null,
+    volume_count  integer not null,
 
     primary key(three_gram_id, year),
     constraint fk_three_gram_entries_three_gram_id foreign key (three_gram_id) references three_grams(id)
 );
 
 create table four_grams (
-    id       int not null primary key,
-    word1_id int not null,
-    word2_id int not null,
-    word3_id int not null,
-    word4_id int not null,
+    id       integer primary key autoincrement,
+    word1_id integer not null,
+    word2_id integer not null,
+    word3_id integer not null,
+    word4_id integer not null,
 
     constraint fk_four_grams_word1_id foreign key (word1_id) references words(id),
     constraint fk_four_grams_word2_id foreign key (word2_id) references words(id),
@@ -82,22 +80,22 @@ create table four_grams (
 create unique index idx_four_grams on four_grams(word1_id, word2_id, word3_id, word4_id);
 
 create table four_gram_entries (
-    four_gram_id int not null,
-    year         int not null,
-    match_count  int not null,
-    volume_count int not null,
+    four_gram_id integer not null,
+    year         integer not null,
+    match_count  integer not null,
+    volume_count integer not null,
 
     primary key(four_gram_id, year),
     constraint fk_four_gram_entries_four_gram_id foreign key (four_gram_id) references four_grams(id)
 );
 
 create table five_grams (
-    id       int not null primary key,
-    word1_id int not null,
-    word2_id int not null,
-    word3_id int not null,
-    word4_id int not null,
-    word5_id int not null,
+    id       integer primary key autoincrement,
+    word1_id integer not null,
+    word2_id integer not null,
+    word3_id integer not null,
+    word4_id integer not null,
+    word5_id integer not null,
 
     constraint fk_five_grams_word1_id foreign key (word1_id) references words(id),
     constraint fk_five_grams_word2_id foreign key (word2_id) references words(id),
@@ -109,18 +107,18 @@ create table five_grams (
 create unique index idx_five_grams on five_grams(word1_id, word2_id, word3_id, word4_id, word5_id);
 
 create table five_gram_entries (
-    five_gram_id int not null,
-    year         int not null,
-    match_count  int not null,
-    volume_count int not null,
+    five_gram_id integer not null,
+    year         integer not null,
+    match_count  integer not null,
+    volume_count integer not null,
 
     primary key(five_gram_id, year),
     constraint fk_five_gram_entries_five_gram_id foreign key (five_gram_id) references five_grams(id)
 );
 
 create table fetched_files (
-    n   int not null,
-    idx int not null,
+    n   integer not null,
+    idx integer not null,
 
     primary key(n, idx)
 );
