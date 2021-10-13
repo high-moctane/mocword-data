@@ -12,15 +12,15 @@ pub union Ngram {
 }
 
 #[derive(Queryable)]
-pub struct Word<'a> {
+pub struct Word {
     pub id: i64,
-    pub word: &'a str,
+    pub word: String,
 }
 
 #[derive(Insertable)]
 #[table_name = "words"]
-pub struct NewWord<'a> {
-    pub word: &'a str,
+pub struct NewWord {
+    pub word: String,
 }
 
 #[derive(Queryable, Copy, Clone)]
