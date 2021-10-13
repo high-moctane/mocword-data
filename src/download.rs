@@ -70,7 +70,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-type Ngram<'a> = Vec<&'a str>;
+type Ngram = Vec<String>;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Entry(i16, i64, i64);
@@ -104,8 +104,8 @@ fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
     Ok((ngram, entries))
 }
 
-fn parse_ngram<'a>(ngram_vec: &'a str) -> Vec<&'a str> {
-    ngram_vec.split(" ").collect()
+fn parse_ngram(ngram_vec: &str) -> Vec<String> {
+    ngram_vec.split(" ").map(|w| w.to_string()).collect()
 }
 
 fn parse_entries(entries_line: &str) -> Result<Vec<Entry>> {
@@ -134,8 +134,49 @@ fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<models::Ngram> {
     unimplemented!();
 }
 
-fn save_words<'a>(conn: &'a SqliteConnection, ngram: &'a Ngram) -> Result<Vec<models::Word<'a>>> {
-    unimplemented!();
+fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word>> {
+    use schema::words::dsl;
+
+    let new_words: Vec<models::NewWord> = ngram
+        .iter()
+        .map(|w| models::NewWord {
+            word: w.to_string(),
+        })
+        .collect();
+
+    diesel::insert_or_ignore_into(dsl::words)
+        .values(&new_words)
+        .execute(conn)?;
+
+    let query = schema::words::dsl::words;
+    Ok(match ngram.len() {
+        1 => query
+            .filter(dsl::word.eq_all(&ngram[0]))
+            .load::<models::Word>(conn)?,
+        2 => query
+            .filter(dsl::word.eq_all(&ngram[0]))
+            .or_filter(dsl::word.eq_all(&ngram[1]))
+            .load::<models::Word>(conn)?,
+        3 => query
+            .filter(dsl::word.eq_all(&ngram[0]))
+            .or_filter(dsl::word.eq_all(&ngram[1]))
+            .or_filter(dsl::word.eq_all(&ngram[2]))
+            .load::<models::Word>(conn)?,
+        4 => query
+            .filter(dsl::word.eq_all(&ngram[0]))
+            .or_filter(dsl::word.eq_all(&ngram[1]))
+            .or_filter(dsl::word.eq_all(&ngram[2]))
+            .or_filter(dsl::word.eq_all(&ngram[3]))
+            .load::<models::Word>(conn)?,
+        5 => query
+            .filter(dsl::word.eq_all(&ngram[0]))
+            .or_filter(dsl::word.eq_all(&ngram[1]))
+            .or_filter(dsl::word.eq_all(&ngram[2]))
+            .or_filter(dsl::word.eq_all(&ngram[3]))
+            .or_filter(dsl::word.eq_all(&ngram[4]))
+            .load::<models::Word>(conn)?,
+        _ => panic!("invalid ngram: {:?}", &ngram),
+    })
 }
 
 fn save_entries(
