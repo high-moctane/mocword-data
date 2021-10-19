@@ -72,6 +72,7 @@ pub fn run() -> Result<()> {
 
 type Ngram = Vec<String>;
 
+// year, match_count, volume_count
 #[derive(Debug, PartialEq, Eq)]
 struct Entry(i16, i64, i64);
 
@@ -325,7 +326,134 @@ fn save_entries(
     ngram_record: &Box<dyn models::Ngram>,
     entries: &Vec<Entry>,
 ) -> Result<()> {
-    unimplemented!();
+    Ok(match ngram_record.n() {
+        1 => save_one_gram_entries(conn, ngram_record.get_id(), entries)?,
+        2 => save_two_gram_entries(conn, ngram_record.get_id(), entries)?,
+        3 => save_three_gram_entries(conn, ngram_record.get_id(), entries)?,
+        4 => save_four_gram_entries(conn, ngram_record.get_id(), entries)?,
+        5 => save_five_gram_entries(conn, ngram_record.get_id(), entries)?,
+        _ => Err(DownloadError::InvalidEntry(format!("{:?}", entries)))?,
+    })
+}
+
+fn save_one_gram_entries(
+    conn: &SqliteConnection,
+    ngram_id: i64,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    use schema::one_gram_entries::dsl;
+
+    let mut entry_records = vec![];
+    for ent in entries {
+        entry_records.push(models::NewOneGramEntry {
+            one_gram_id: ngram_id,
+            year: ent.0,
+            match_count: ent.1,
+            volume_count: ent.2,
+        })
+    }
+
+    diesel::insert_or_ignore_into(dsl::one_gram_entries)
+        .values(&entry_records)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+fn save_two_gram_entries(
+    conn: &SqliteConnection,
+    ngram_id: i64,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    use schema::two_gram_entries::dsl;
+
+    let mut entry_records = vec![];
+    for ent in entries {
+        entry_records.push(models::NewTwoGramEntry {
+            two_gram_id: ngram_id,
+            year: ent.0,
+            match_count: ent.1,
+            volume_count: ent.2,
+        })
+    }
+
+    diesel::insert_or_ignore_into(dsl::two_gram_entries)
+        .values(&entry_records)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+fn save_three_gram_entries(
+    conn: &SqliteConnection,
+    ngram_id: i64,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    use schema::three_gram_entries::dsl;
+
+    let mut entry_records = vec![];
+    for ent in entries {
+        entry_records.push(models::NewThreeGramEntry {
+            three_gram_id: ngram_id,
+            year: ent.0,
+            match_count: ent.1,
+            volume_count: ent.2,
+        })
+    }
+
+    diesel::insert_or_ignore_into(dsl::three_gram_entries)
+        .values(&entry_records)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+fn save_four_gram_entries(
+    conn: &SqliteConnection,
+    ngram_id: i64,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    use schema::four_gram_entries::dsl;
+
+    let mut entry_records = vec![];
+    for ent in entries {
+        entry_records.push(models::NewFourGramEntry {
+            four_gram_id: ngram_id,
+            year: ent.0,
+            match_count: ent.1,
+            volume_count: ent.2,
+        })
+    }
+
+    diesel::insert_or_ignore_into(dsl::four_gram_entries)
+        .values(&entry_records)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+fn save_five_gram_entries(
+    conn: &SqliteConnection,
+    ngram_id: i64,
+    entries: &Vec<Entry>,
+) -> Result<()> {
+    use schema::five_gram_entries::dsl;
+
+    let mut entry_records = vec![];
+    for ent in entries {
+        entry_records.push(models::NewFiveGramEntry {
+            five_gram_id: ngram_id,
+            year: ent.0,
+            match_count: ent.1,
+            volume_count: ent.2,
+        })
+    }
+
+    diesel::insert_or_ignore_into(dsl::five_gram_entries)
+        .values(&entry_records)
+        .execute(conn)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

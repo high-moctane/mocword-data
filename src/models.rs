@@ -3,7 +3,10 @@ use crate::schema::{
     one_grams, three_gram_entries, three_grams, two_gram_entries, two_grams, words,
 };
 
-pub trait Ngram {}
+pub trait Ngram {
+    fn n(&self) -> i16;
+    fn get_id(&self) -> i64;
+}
 
 #[derive(Queryable)]
 pub struct Word {
@@ -23,7 +26,15 @@ pub struct OneGram {
     pub word1_id: i64,
 }
 
-impl Ngram for OneGram {}
+impl Ngram for OneGram {
+    fn n(&self) -> i16 {
+        1
+    }
+
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+}
 
 #[derive(Insertable)]
 #[table_name = "one_grams"]
@@ -55,7 +66,15 @@ pub struct TwoGram {
     pub word2_id: i64,
 }
 
-impl Ngram for TwoGram {}
+impl Ngram for TwoGram {
+    fn n(&self) -> i16 {
+        2
+    }
+
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+}
 
 #[derive(Insertable)]
 #[table_name = "two_grams"]
@@ -89,7 +108,15 @@ pub struct ThreeGram {
     pub word3_id: i64,
 }
 
-impl Ngram for ThreeGram {}
+impl Ngram for ThreeGram {
+    fn n(&self) -> i16 {
+        3
+    }
+
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+}
 
 #[derive(Insertable)]
 #[table_name = "three_grams"]
@@ -125,7 +152,15 @@ pub struct FourGram {
     pub word4_id: i64,
 }
 
-impl Ngram for FourGram {}
+impl Ngram for FourGram {
+    fn n(&self) -> i16 {
+        4
+    }
+
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+}
 
 #[derive(Insertable)]
 #[table_name = "four_grams"]
@@ -163,7 +198,15 @@ pub struct FiveGram {
     pub word5_id: i64,
 }
 
-impl Ngram for FiveGram {}
+impl Ngram for FiveGram {
+    fn n(&self) -> i16 {
+        5
+    }
+
+    fn get_id(&self) -> i64 {
+        self.id
+    }
+}
 
 #[derive(Insertable)]
 #[table_name = "five_grams"]
