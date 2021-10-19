@@ -88,6 +88,9 @@ pub enum DownloadError {
     #[error("invalid line: {0}")]
     InvalidLine(String),
 
+    #[error("invalid ngram: {0:?}")]
+    InvalidNgram(Ngram),
+
     #[error("invalid entry: {0}")]
     InvalidEntry(String),
 }
@@ -129,9 +132,147 @@ fn parse_entry(entry_str: &str) -> Result<Entry> {
     ))
 }
 
-fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<models::Ngram> {
+fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<Box<dyn models::Ngram>> {
     let word_records = save_words(conn, ngram)?;
-    unimplemented!();
+
+    Ok(match ngram.len() {
+        1 => save_one_gram(conn, &word_records)?,
+        2 => save_two_gram(conn, &word_records)?,
+        3 => save_three_gram(conn, &word_records)?,
+        4 => save_four_gram(conn, &word_records)?,
+        5 => save_five_gram(conn, &word_records)?,
+        _ => Err(DownloadError::InvalidNgram(ngram.clone()))?,
+    })
+}
+
+fn save_one_gram(
+    conn: &SqliteConnection,
+    word_records: &Vec<models::Word>,
+) -> Result<Box<models::OneGram>> {
+    use schema::one_grams::dsl;
+
+    let one_gram = models::NewOneGram {
+        word1_id: word_records[0].id,
+    };
+
+    diesel::insert_or_ignore_into(dsl::one_grams)
+        .values(&one_gram)
+        .execute(conn)?;
+
+    Ok(Box::new(
+        dsl::one_grams
+            .filter(dsl::word1_id.eq_all(one_gram.word1_id))
+            .limit(1)
+            .load::<models::OneGram>(conn)?[0],
+    ))
+}
+
+fn save_two_gram(
+    conn: &SqliteConnection,
+    word_records: &Vec<models::Word>,
+) -> Result<Box<models::TwoGram>> {
+    use schema::two_grams::dsl;
+
+    let two_gram = models::NewTwoGram {
+        word1_id: word_records[0].id,
+        word2_id: word_records[1].id,
+    };
+
+    diesel::insert_or_ignore_into(dsl::two_grams)
+        .values(&two_gram)
+        .execute(conn)?;
+
+    Ok(Box::new(
+        dsl::two_grams
+            .filter(dsl::word1_id.eq_all(two_gram.word1_id))
+            .filter(dsl::word2_id.eq_all(two_gram.word2_id))
+            .limit(1)
+            .load::<models::TwoGram>(conn)?[0],
+    ))
+}
+
+fn save_three_gram(
+    conn: &SqliteConnection,
+    word_records: &Vec<models::Word>,
+) -> Result<Box<models::ThreeGram>> {
+    use schema::three_grams::dsl;
+
+    let three_gram = models::NewThreeGram {
+        word1_id: word_records[0].id,
+        word2_id: word_records[1].id,
+        word3_id: word_records[2].id,
+    };
+
+    diesel::insert_or_ignore_into(dsl::three_grams)
+        .values(&three_gram)
+        .execute(conn)?;
+
+    Ok(Box::new(
+        dsl::three_grams
+            .filter(dsl::word1_id.eq_all(three_gram.word1_id))
+            .filter(dsl::word2_id.eq_all(three_gram.word2_id))
+            .filter(dsl::word3_id.eq_all(three_gram.word3_id))
+            .limit(1)
+            .load::<models::ThreeGram>(conn)?[0],
+    ))
+}
+
+fn save_four_gram(
+    conn: &SqliteConnection,
+    word_records: &Vec<models::Word>,
+) -> Result<Box<models::FourGram>> {
+    use schema::four_grams::dsl;
+
+    let four_gram = models::NewFourGram {
+        word1_id: word_records[0].id,
+        word2_id: word_records[1].id,
+        word3_id: word_records[2].id,
+        word4_id: word_records[3].id,
+    };
+
+    diesel::insert_or_ignore_into(dsl::four_grams)
+        .values(&four_gram)
+        .execute(conn)?;
+
+    Ok(Box::new(
+        dsl::four_grams
+            .filter(dsl::word1_id.eq_all(four_gram.word1_id))
+            .filter(dsl::word2_id.eq_all(four_gram.word2_id))
+            .filter(dsl::word3_id.eq_all(four_gram.word3_id))
+            .filter(dsl::word4_id.eq_all(four_gram.word4_id))
+            .limit(1)
+            .load::<models::FourGram>(conn)?[0],
+    ))
+}
+
+fn save_five_gram(
+    conn: &SqliteConnection,
+    word_records: &Vec<models::Word>,
+) -> Result<Box<models::FiveGram>> {
+    use schema::five_grams::dsl;
+
+    let five_gram = models::NewFiveGram {
+        word1_id: word_records[0].id,
+        word2_id: word_records[1].id,
+        word3_id: word_records[2].id,
+        word4_id: word_records[3].id,
+        word5_id: word_records[4].id,
+    };
+
+    diesel::insert_or_ignore_into(dsl::five_grams)
+        .values(&five_gram)
+        .execute(conn)?;
+
+    Ok(Box::new(
+        dsl::five_grams
+            .filter(dsl::word1_id.eq_all(five_gram.word1_id))
+            .filter(dsl::word2_id.eq_all(five_gram.word2_id))
+            .filter(dsl::word3_id.eq_all(five_gram.word3_id))
+            .filter(dsl::word4_id.eq_all(five_gram.word4_id))
+            .filter(dsl::word5_id.eq_all(five_gram.word5_id))
+            .limit(1)
+            .load::<models::FiveGram>(conn)?[0],
+    ))
 }
 
 fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word>> {
@@ -181,7 +322,7 @@ fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word
 
 fn save_entries(
     conn: &SqliteConnection,
-    ngram_record: &models::Ngram,
+    ngram_record: &Box<dyn models::Ngram>,
     entries: &Vec<Entry>,
 ) -> Result<()> {
     unimplemented!();
