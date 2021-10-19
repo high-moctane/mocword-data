@@ -3,13 +3,7 @@ use crate::schema::{
     one_grams, three_gram_entries, three_grams, two_gram_entries, two_grams, words,
 };
 
-pub union Ngram {
-    one_gram: OneGram,
-    two_gram: TwoGram,
-    three_gram: ThreeGram,
-    four_gram: FourGram,
-    five_gram: FiveGram,
-}
+pub trait Ngram {}
 
 #[derive(Queryable)]
 pub struct Word {
@@ -28,6 +22,8 @@ pub struct OneGram {
     pub id: i64,
     pub word1_id: i64,
 }
+
+impl Ngram for OneGram {}
 
 #[derive(Insertable)]
 #[table_name = "one_grams"]
@@ -56,12 +52,16 @@ pub struct NewOneGramEntry {
 pub struct TwoGram {
     pub id: i64,
     pub word1_id: i64,
+    pub word2_id: i64,
 }
+
+impl Ngram for TwoGram {}
 
 #[derive(Insertable)]
 #[table_name = "two_grams"]
 pub struct NewTwoGram {
     pub word1_id: i64,
+    pub word2_id: i64,
 }
 
 #[derive(Queryable)]
@@ -85,12 +85,18 @@ pub struct NewTwoGramEntry {
 pub struct ThreeGram {
     pub id: i64,
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
 }
+
+impl Ngram for ThreeGram {}
 
 #[derive(Insertable)]
 #[table_name = "three_grams"]
 pub struct NewThreeGram {
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
 }
 
 #[derive(Queryable)]
@@ -114,12 +120,20 @@ pub struct NewThreeGramEntry {
 pub struct FourGram {
     pub id: i64,
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
+    pub word4_id: i64,
 }
+
+impl Ngram for FourGram {}
 
 #[derive(Insertable)]
 #[table_name = "four_grams"]
 pub struct NewFourGram {
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
+    pub word4_id: i64,
 }
 
 #[derive(Queryable)]
@@ -143,12 +157,22 @@ pub struct NewFourGramEntry {
 pub struct FiveGram {
     pub id: i64,
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
+    pub word4_id: i64,
+    pub word5_id: i64,
 }
+
+impl Ngram for FiveGram {}
 
 #[derive(Insertable)]
 #[table_name = "five_grams"]
 pub struct NewFiveGram {
     pub word1_id: i64,
+    pub word2_id: i64,
+    pub word3_id: i64,
+    pub word4_id: i64,
+    pub word5_id: i64,
 }
 
 #[derive(Queryable)]
