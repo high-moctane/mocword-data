@@ -77,11 +77,11 @@ type Ngram = Vec<String>;
 struct Entry(i16, i64, i64);
 
 fn save_line(conn: &SqliteConnection, line: &str) -> Result<()> {
-    unimplemented!();
-
     let (ngram, entries) = parse_line(line)?;
     let ngram_record = save_ngram(conn, &ngram)?;
     save_entries(conn, &ngram_record, &entries)?;
+
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -291,7 +291,7 @@ fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word
         .execute(conn)?;
 
     let query = schema::words::dsl::words;
-    Ok(match ngram.len() {
+    let uniq_words = match ngram.len() {
         1 => query
             .filter(dsl::word.eq_all(&ngram[0]))
             .load::<models::Word>(conn)?,
@@ -318,7 +318,22 @@ fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word
             .or_filter(dsl::word.eq_all(&ngram[4]))
             .load::<models::Word>(conn)?,
         _ => panic!("invalid ngram: {:?}", &ngram),
-    })
+    };
+
+    let mut res = vec![];
+    for word in ngram.iter() {
+        res.push(models::Word {
+            id: uniq_words
+                .iter()
+                .filter(|uw| &uw.word == word)
+                .next()
+                .unwrap()
+                .id,
+            word: word.to_string(),
+        });
+    }
+
+    Ok(res)
 }
 
 fn save_entries(
@@ -481,5 +496,27 @@ mod tests {
         // NG
         assert!(parse_line("hello world 1773,2").is_err());
         assert!(parse_line("hello world 1773,2,5 143").is_err());
+    }
+
+    #[test]
+    fn test_insert() {
+        return;
+
+        let data = vec![
+            "powa\t2012,4,35 2015,53,165",
+            "dousite\t2010,11,31 2020,61,172",
+            "meu powa\t2006,11,30 2024,61,176",
+            "majika meu\t2001,15,38 2032,54,181",
+            "moyasu meu powa\t2005,23,48 2015,53,165 2016,65,544",
+            "moyasu dousite powa\t2011,17,53 2027,56,167 2013,61,546",
+            "very moyasu meu powa\t2005,23,48",
+            "moctane very moyasu powa\t1999,35,55",
+            "very moyasu meu powa nemu\t1434,23,534 2005,23,48 1214,534,12",
+            "very nemu meu powa nemu\t1440,17,537 2005,23,48 1214,534,12",
+        ];
+
+        let conn = SqliteConnection::establish("build/download.test.sqlite").unwrap();
+
+        data.iter().try_for_each(|d| save_line(&conn, d)).unwrap();
     }
 }
