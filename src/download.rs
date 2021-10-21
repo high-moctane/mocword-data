@@ -1,10 +1,19 @@
+use std::fs::File;
+use std::io::{prelude::*, BufRead, BufReader, BufWriter};
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use flate2::bufread::GzDecoder;
+use reqwest::blocking;
 use thiserror::Error;
+use url::Url;
 
 use crate::models;
 use crate::schema;
+
+static BUILD_DST: &str = "build";
 
 #[derive(Debug)]
 enum Language {
@@ -55,7 +64,7 @@ fn gz_url(lang: &Language, n: i8, idx: i16) -> String {
     let total = total_file_num(lang, n);
 
     format!(
-        "http://storage.googleapis.com/books/ngrams/books/20200217/{}/{}-{}-of-{}.gz",
+        "http://storage.googleapis.com/books/ngrams/books/20200217/{}/{}-{:05}-of-{:05}.gz",
         lang.url_name(),
         n,
         idx,
@@ -66,7 +75,23 @@ fn gz_url(lang: &Language, n: i8, idx: i16) -> String {
 pub fn run() -> Result<()> {
     let conn = SqliteConnection::establish("build/download.sqlite")?;
 
-    println!("Hello, download!");
+    download(&conn, &Language::English, 5, 10000)?;
+
+    Ok(())
+}
+
+fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i16) -> Result<()> {
+    let url = gz_url(lang, n, idx);
+
+    let mut body = vec![];
+
+    blocking::get(&url)?.read_to_end(&mut body)?;
+    let gz = GzDecoder::new(&body[..]);
+
+    BufReader::new(gz)
+        .lines()
+        .try_for_each(|line| save_line(conn, &line?))?;
+
     Ok(())
 }
 
@@ -98,12 +123,12 @@ pub enum DownloadError {
 
 fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
     let ngram_entries: Vec<&str> = line.split("\t").collect();
-    if ngram_entries.len() != 2 {
+    if ngram_entries.len() < 2 {
         return Err(DownloadError::InvalidLine(line.to_string()))?;
     }
 
     let ngram = parse_ngram(ngram_entries[0]);
-    let entries = parse_entries(ngram_entries[1])?;
+    let entries = parse_entries(&ngram_entries[1..])?;
 
     Ok((ngram, entries))
 }
@@ -112,18 +137,18 @@ fn parse_ngram(ngram_vec: &str) -> Vec<String> {
     ngram_vec.split(" ").map(|w| w.to_string()).collect()
 }
 
-fn parse_entries(entries_line: &str) -> Result<Vec<Entry>> {
+fn parse_entries(entries: &[&str]) -> Result<Vec<Entry>> {
     let mut res = Vec::new();
-    for s in entries_line.split(" ") {
+    for s in entries.iter() {
         res.push(parse_entry(s)?);
     }
     Ok(res)
 }
 
-fn parse_entry(entry_str: &str) -> Result<Entry> {
-    let elems: Vec<&str> = entry_str.split(",").collect();
+fn parse_entry(entry: &str) -> Result<Entry> {
+    let elems: Vec<&str> = entry.split(",").collect();
     if elems.len() != 3 {
-        return Err(DownloadError::InvalidEntry(entry_str.to_string()))?;
+        return Err(DownloadError::InvalidEntry(entry.to_string()))?;
     }
 
     Ok(Entry(
