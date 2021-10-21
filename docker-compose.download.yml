@@ -5,4 +5,4 @@ services:
       context: .
       dockerfile: Dockerfile.download
     volumes:
-      - ./build:/build
+      - ./build:/app/build
