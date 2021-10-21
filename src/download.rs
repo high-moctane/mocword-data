@@ -1,6 +1,5 @@
-use std::fs::File;
-use std::io::{prelude::*, BufRead, BufReader, BufWriter};
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::io::{prelude::*, BufRead, BufReader};
 
 use anyhow::Result;
 use diesel::prelude::*;
@@ -8,7 +7,6 @@ use diesel::sqlite::SqliteConnection;
 use flate2::bufread::GzDecoder;
 use reqwest::blocking;
 use thiserror::Error;
-use url::Url;
 
 use crate::models;
 use crate::schema;
@@ -46,7 +44,7 @@ impl Language {
     }
 }
 
-fn total_file_num(lang: &Language, n: i8) -> i16 {
+fn total_file_num(lang: &Language, n: i8) -> i64 {
     match lang {
         Language::English => match n {
             1 => 24,
@@ -60,7 +58,7 @@ fn total_file_num(lang: &Language, n: i8) -> i16 {
     }
 }
 
-fn gz_url(lang: &Language, n: i8, idx: i16) -> String {
+fn gz_url(lang: &Language, n: i8, idx: i64) -> String {
     let total = total_file_num(lang, n);
 
     format!(
@@ -80,7 +78,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i16) -> Result<()> {
+fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i64) -> Result<()> {
     let url = gz_url(lang, n, idx);
 
     let mut body = vec![];
@@ -88,23 +86,78 @@ fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i16) -> Result
     blocking::get(&url)?.read_to_end(&mut body)?;
     let gz = GzDecoder::new(&body[..]);
 
-    BufReader::new(gz)
-        .lines()
-        .try_for_each(|line| save_line(conn, &line?))?;
+    let mut data = vec![];
+
+    for line in BufReader::new(gz).lines() {
+        data.push(parse_line(&line?)?);
+        if data.len() >= 10000 {
+            save(conn, &data)?;
+            data = vec![];
+        }
+    }
+    if data.len() > 0 {
+        save(conn, &data)?;
+    }
 
     Ok(())
 }
 
+#[derive(Debug, PartialEq)]
+struct Data {
+    ngram: Ngram,
+    score: i64,
+}
+
+#[derive(Debug)]
+struct Record {
+    ngram: Vec<i64>,
+    score: i64,
+}
+
 type Ngram = Vec<String>;
 
-// year, match_count, volume_count
 #[derive(Debug, PartialEq, Eq)]
-struct Entry(i16, i64, i64);
+struct Entry {
+    year: i64,
+    match_count: i64,
+    volume_count: i64,
+}
 
-fn save_line(conn: &SqliteConnection, line: &str) -> Result<()> {
-    let (ngram, entries) = parse_line(line)?;
-    let ngram_record = save_ngram(conn, &ngram)?;
-    save_entries(conn, &ngram_record, &entries)?;
+fn save(conn: &SqliteConnection, data: &[Data]) -> Result<()> {
+    let words: Vec<String> = data.iter().map(|d| d.ngram.clone()).flatten().collect();
+    let word_records = save_words(conn, words.as_slice())?;
+
+    let mut word_ids = HashMap::new();
+    for rec in word_records.iter() {
+        word_ids.insert(&rec.word, rec.id.to_owned());
+    }
+
+    let records: Vec<Record> = data
+        .iter()
+        .map(|d| Record {
+            ngram: d
+                .ngram
+                .iter()
+                .map(|w| word_ids.get(w).unwrap().to_owned())
+                .collect(),
+            score: d.score,
+        })
+        .collect();
+
+    save_records(conn, &records)?;
+
+    Ok(())
+}
+
+fn save_records(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
+    match records[0].ngram.len() {
+        1 => save_one_grams(conn, records)?,
+        2 => save_two_grams(conn, records)?,
+        3 => save_three_grams(conn, records)?,
+        4 => save_four_grams(conn, records)?,
+        5 => save_five_grams(conn, records)?,
+        _ => panic!("invalid ngram: {:?}", records),
+    };
 
     Ok(())
 }
@@ -121,7 +174,7 @@ pub enum DownloadError {
     InvalidEntry(String),
 }
 
-fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
+fn parse_line(line: &str) -> Result<Data> {
     let ngram_entries: Vec<&str> = line.split("\t").collect();
     if ngram_entries.len() < 2 {
         return Err(DownloadError::InvalidLine(line.to_string()))?;
@@ -129,8 +182,9 @@ fn parse_line(line: &str) -> Result<(Ngram, Vec<Entry>)> {
 
     let ngram = parse_ngram(ngram_entries[0]);
     let entries = parse_entries(&ngram_entries[1..])?;
+    let score = calc_score(&entries);
 
-    Ok((ngram, entries))
+    Ok(Data { ngram, score })
 }
 
 fn parse_ngram(ngram_vec: &str) -> Vec<String> {
@@ -151,160 +205,129 @@ fn parse_entry(entry: &str) -> Result<Entry> {
         return Err(DownloadError::InvalidEntry(entry.to_string()))?;
     }
 
-    Ok(Entry(
-        elems[0].parse()?,
-        elems[1].parse()?,
-        elems[2].parse()?,
-    ))
-}
-
-fn save_ngram(conn: &SqliteConnection, ngram: &Ngram) -> Result<Box<dyn models::Ngram>> {
-    let word_records = save_words(conn, ngram)?;
-
-    Ok(match ngram.len() {
-        1 => save_one_gram(conn, &word_records)?,
-        2 => save_two_gram(conn, &word_records)?,
-        3 => save_three_gram(conn, &word_records)?,
-        4 => save_four_gram(conn, &word_records)?,
-        5 => save_five_gram(conn, &word_records)?,
-        _ => Err(DownloadError::InvalidNgram(ngram.clone()))?,
+    Ok(Entry {
+        year: elems[0].parse()?,
+        match_count: elems[1].parse()?,
+        volume_count: elems[2].parse()?,
     })
 }
 
-fn save_one_gram(
-    conn: &SqliteConnection,
-    word_records: &Vec<models::Word>,
-) -> Result<Box<models::OneGram>> {
+fn calc_score(entries: &[Entry]) -> i64 {
+    entries
+        .iter()
+        .fold(0, |score, entry| score + entry.match_count)
+}
+
+fn save_one_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     use schema::one_grams::dsl;
 
-    let one_gram = models::NewOneGram {
-        word1_id: word_records[0].id,
-    };
+    let one_grams: Vec<models::NewOneGram> = records
+        .iter()
+        .map(|rec| models::NewOneGram {
+            word1_id: rec.ngram[0],
+            score: rec.score,
+        })
+        .collect();
 
     diesel::insert_or_ignore_into(dsl::one_grams)
-        .values(&one_gram)
+        .values(&one_grams)
         .execute(conn)?;
 
-    Ok(Box::new(
-        dsl::one_grams
-            .filter(dsl::word1_id.eq_all(one_gram.word1_id))
-            .limit(1)
-            .load::<models::OneGram>(conn)?[0],
-    ))
+    Ok(())
 }
 
-fn save_two_gram(
-    conn: &SqliteConnection,
-    word_records: &Vec<models::Word>,
-) -> Result<Box<models::TwoGram>> {
+fn save_two_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     use schema::two_grams::dsl;
 
-    let two_gram = models::NewTwoGram {
-        word1_id: word_records[0].id,
-        word2_id: word_records[1].id,
-    };
+    let two_grams: Vec<models::NewTwoGram> = records
+        .iter()
+        .map(|rec| models::NewTwoGram {
+            word1_id: rec.ngram[0],
+            word2_id: rec.ngram[1],
+            score: rec.score,
+        })
+        .collect();
 
     diesel::insert_or_ignore_into(dsl::two_grams)
-        .values(&two_gram)
+        .values(&two_grams)
         .execute(conn)?;
 
-    Ok(Box::new(
-        dsl::two_grams
-            .filter(dsl::word1_id.eq_all(two_gram.word1_id))
-            .filter(dsl::word2_id.eq_all(two_gram.word2_id))
-            .limit(1)
-            .load::<models::TwoGram>(conn)?[0],
-    ))
+    Ok(())
 }
 
-fn save_three_gram(
-    conn: &SqliteConnection,
-    word_records: &Vec<models::Word>,
-) -> Result<Box<models::ThreeGram>> {
+fn save_three_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     use schema::three_grams::dsl;
 
-    let three_gram = models::NewThreeGram {
-        word1_id: word_records[0].id,
-        word2_id: word_records[1].id,
-        word3_id: word_records[2].id,
-    };
+    let three_grams: Vec<models::NewThreeGram> = records
+        .iter()
+        .map(|rec| models::NewThreeGram {
+            word1_id: rec.ngram[0],
+            word2_id: rec.ngram[1],
+            word3_id: rec.ngram[2],
+            score: rec.score,
+        })
+        .collect();
 
     diesel::insert_or_ignore_into(dsl::three_grams)
-        .values(&three_gram)
+        .values(&three_grams)
         .execute(conn)?;
 
-    Ok(Box::new(
-        dsl::three_grams
-            .filter(dsl::word1_id.eq_all(three_gram.word1_id))
-            .filter(dsl::word2_id.eq_all(three_gram.word2_id))
-            .filter(dsl::word3_id.eq_all(three_gram.word3_id))
-            .limit(1)
-            .load::<models::ThreeGram>(conn)?[0],
-    ))
+    Ok(())
 }
 
-fn save_four_gram(
-    conn: &SqliteConnection,
-    word_records: &Vec<models::Word>,
-) -> Result<Box<models::FourGram>> {
+fn save_four_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     use schema::four_grams::dsl;
 
-    let four_gram = models::NewFourGram {
-        word1_id: word_records[0].id,
-        word2_id: word_records[1].id,
-        word3_id: word_records[2].id,
-        word4_id: word_records[3].id,
-    };
+    let four_grams: Vec<models::NewFourGram> = records
+        .iter()
+        .map(|rec| models::NewFourGram {
+            word1_id: rec.ngram[0],
+            word2_id: rec.ngram[1],
+            word3_id: rec.ngram[2],
+            word4_id: rec.ngram[3],
+            score: rec.score,
+        })
+        .collect();
 
     diesel::insert_or_ignore_into(dsl::four_grams)
-        .values(&four_gram)
+        .values(&four_grams)
         .execute(conn)?;
 
-    Ok(Box::new(
-        dsl::four_grams
-            .filter(dsl::word1_id.eq_all(four_gram.word1_id))
-            .filter(dsl::word2_id.eq_all(four_gram.word2_id))
-            .filter(dsl::word3_id.eq_all(four_gram.word3_id))
-            .filter(dsl::word4_id.eq_all(four_gram.word4_id))
-            .limit(1)
-            .load::<models::FourGram>(conn)?[0],
-    ))
+    Ok(())
 }
 
-fn save_five_gram(
-    conn: &SqliteConnection,
-    word_records: &Vec<models::Word>,
-) -> Result<Box<models::FiveGram>> {
+fn save_five_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     use schema::five_grams::dsl;
 
-    let five_gram = models::NewFiveGram {
-        word1_id: word_records[0].id,
-        word2_id: word_records[1].id,
-        word3_id: word_records[2].id,
-        word4_id: word_records[3].id,
-        word5_id: word_records[4].id,
-    };
+    let five_grams: Vec<models::NewFiveGram> = records
+        .iter()
+        .map(|rec| models::NewFiveGram {
+            word1_id: rec.ngram[0],
+            word2_id: rec.ngram[1],
+            word3_id: rec.ngram[2],
+            word4_id: rec.ngram[3],
+            word5_id: rec.ngram[4],
+            score: rec.score,
+        })
+        .collect();
 
     diesel::insert_or_ignore_into(dsl::five_grams)
-        .values(&five_gram)
+        .values(&five_grams)
         .execute(conn)?;
 
-    Ok(Box::new(
-        dsl::five_grams
-            .filter(dsl::word1_id.eq_all(five_gram.word1_id))
-            .filter(dsl::word2_id.eq_all(five_gram.word2_id))
-            .filter(dsl::word3_id.eq_all(five_gram.word3_id))
-            .filter(dsl::word4_id.eq_all(five_gram.word4_id))
-            .filter(dsl::word5_id.eq_all(five_gram.word5_id))
-            .limit(1)
-            .load::<models::FiveGram>(conn)?[0],
-    ))
+    Ok(())
 }
 
-fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word>> {
+fn save_words(conn: &SqliteConnection, words: &[String]) -> Result<Vec<models::Word>> {
     use schema::words::dsl;
 
-    let new_words: Vec<models::NewWord> = ngram
+    let mut unique_words = HashSet::new();
+
+    for word in words.iter() {
+        unique_words.insert(word);
+    }
+
+    let new_words: Vec<models::NewWord> = unique_words
         .iter()
         .map(|w| models::NewWord {
             word: w.to_string(),
@@ -315,185 +338,16 @@ fn save_words(conn: &SqliteConnection, ngram: &Ngram) -> Result<Vec<models::Word
         .values(&new_words)
         .execute(conn)?;
 
-    let query = schema::words::dsl::words;
-    let uniq_words = match ngram.len() {
-        1 => query
-            .filter(dsl::word.eq_all(&ngram[0]))
-            .load::<models::Word>(conn)?,
-        2 => query
-            .filter(dsl::word.eq_all(&ngram[0]))
-            .or_filter(dsl::word.eq_all(&ngram[1]))
-            .load::<models::Word>(conn)?,
-        3 => query
-            .filter(dsl::word.eq_all(&ngram[0]))
-            .or_filter(dsl::word.eq_all(&ngram[1]))
-            .or_filter(dsl::word.eq_all(&ngram[2]))
-            .load::<models::Word>(conn)?,
-        4 => query
-            .filter(dsl::word.eq_all(&ngram[0]))
-            .or_filter(dsl::word.eq_all(&ngram[1]))
-            .or_filter(dsl::word.eq_all(&ngram[2]))
-            .or_filter(dsl::word.eq_all(&ngram[3]))
-            .load::<models::Word>(conn)?,
-        5 => query
-            .filter(dsl::word.eq_all(&ngram[0]))
-            .or_filter(dsl::word.eq_all(&ngram[1]))
-            .or_filter(dsl::word.eq_all(&ngram[2]))
-            .or_filter(dsl::word.eq_all(&ngram[3]))
-            .or_filter(dsl::word.eq_all(&ngram[4]))
-            .load::<models::Word>(conn)?,
-        _ => panic!("invalid ngram: {:?}", &ngram),
-    };
-
     let mut res = vec![];
-    for word in ngram.iter() {
-        res.push(models::Word {
-            id: uniq_words
-                .iter()
-                .filter(|uw| &uw.word == word)
-                .next()
-                .unwrap()
-                .id,
-            word: word.to_string(),
-        });
+
+    for word in unique_words.iter() {
+        let word_record = schema::words::dsl::words
+            .filter(dsl::word.eq_all(word.clone()))
+            .load::<models::Word>(conn)?;
+        res.push(word_record);
     }
 
-    Ok(res)
-}
-
-fn save_entries(
-    conn: &SqliteConnection,
-    ngram_record: &Box<dyn models::Ngram>,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    Ok(match ngram_record.n() {
-        1 => save_one_gram_entries(conn, ngram_record.get_id(), entries)?,
-        2 => save_two_gram_entries(conn, ngram_record.get_id(), entries)?,
-        3 => save_three_gram_entries(conn, ngram_record.get_id(), entries)?,
-        4 => save_four_gram_entries(conn, ngram_record.get_id(), entries)?,
-        5 => save_five_gram_entries(conn, ngram_record.get_id(), entries)?,
-        _ => Err(DownloadError::InvalidEntry(format!("{:?}", entries)))?,
-    })
-}
-
-fn save_one_gram_entries(
-    conn: &SqliteConnection,
-    ngram_id: i64,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    use schema::one_gram_entries::dsl;
-
-    let mut entry_records = vec![];
-    for ent in entries {
-        entry_records.push(models::NewOneGramEntry {
-            one_gram_id: ngram_id,
-            year: ent.0,
-            match_count: ent.1,
-            volume_count: ent.2,
-        })
-    }
-
-    diesel::insert_or_ignore_into(dsl::one_gram_entries)
-        .values(&entry_records)
-        .execute(conn)?;
-
-    Ok(())
-}
-
-fn save_two_gram_entries(
-    conn: &SqliteConnection,
-    ngram_id: i64,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    use schema::two_gram_entries::dsl;
-
-    let mut entry_records = vec![];
-    for ent in entries {
-        entry_records.push(models::NewTwoGramEntry {
-            two_gram_id: ngram_id,
-            year: ent.0,
-            match_count: ent.1,
-            volume_count: ent.2,
-        })
-    }
-
-    diesel::insert_or_ignore_into(dsl::two_gram_entries)
-        .values(&entry_records)
-        .execute(conn)?;
-
-    Ok(())
-}
-
-fn save_three_gram_entries(
-    conn: &SqliteConnection,
-    ngram_id: i64,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    use schema::three_gram_entries::dsl;
-
-    let mut entry_records = vec![];
-    for ent in entries {
-        entry_records.push(models::NewThreeGramEntry {
-            three_gram_id: ngram_id,
-            year: ent.0,
-            match_count: ent.1,
-            volume_count: ent.2,
-        })
-    }
-
-    diesel::insert_or_ignore_into(dsl::three_gram_entries)
-        .values(&entry_records)
-        .execute(conn)?;
-
-    Ok(())
-}
-
-fn save_four_gram_entries(
-    conn: &SqliteConnection,
-    ngram_id: i64,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    use schema::four_gram_entries::dsl;
-
-    let mut entry_records = vec![];
-    for ent in entries {
-        entry_records.push(models::NewFourGramEntry {
-            four_gram_id: ngram_id,
-            year: ent.0,
-            match_count: ent.1,
-            volume_count: ent.2,
-        })
-    }
-
-    diesel::insert_or_ignore_into(dsl::four_gram_entries)
-        .values(&entry_records)
-        .execute(conn)?;
-
-    Ok(())
-}
-
-fn save_five_gram_entries(
-    conn: &SqliteConnection,
-    ngram_id: i64,
-    entries: &Vec<Entry>,
-) -> Result<()> {
-    use schema::five_gram_entries::dsl;
-
-    let mut entry_records = vec![];
-    for ent in entries {
-        entry_records.push(models::NewFiveGramEntry {
-            five_gram_id: ngram_id,
-            year: ent.0,
-            match_count: ent.1,
-            volume_count: ent.2,
-        })
-    }
-
-    diesel::insert_or_ignore_into(dsl::five_gram_entries)
-        .values(&entry_records)
-        .execute(conn)?;
-
-    Ok(())
+    Ok(res.into_iter().flatten().collect())
 }
 
 #[cfg(test)]
@@ -506,17 +360,31 @@ mod tests {
         let input = "hello world\t2012,195943,849381\t2013,598483,57483\t2014,483584,4731";
         let want_ngram: Vec<String> = vec!["hello".to_string(), "world".to_string()];
         let want_entries = vec![
-            Entry(2012, 195943, 849381),
-            Entry(2013, 598483, 57483),
-            Entry(2014, 483584, 4731),
+            Entry {
+                year: 2012,
+                match_count: 195943,
+                volume_count: 849381,
+            },
+            Entry {
+                year: 2013,
+                match_count: 598483,
+                volume_count: 57483,
+            },
+            Entry {
+                year: 2014,
+                match_count: 483584,
+                volume_count: 4731,
+            },
         ];
 
-        let (got_ngram, got_entries) = parse_line(&input).unwrap();
-        assert_eq!(want_ngram.len(), got_ngram.len());
-        for i in 0..want_ngram.len() {
-            assert_eq!(want_ngram[i], got_ngram[i].to_string());
-        }
-        assert_eq!(&want_entries[..], &got_entries[..]);
+        let data = parse_line(&input).unwrap();
+        assert_eq!(
+            &data,
+            &Data {
+                ngram: vec!["hello".to_string(), "world".to_string()],
+                score: 1278010
+            }
+        );
 
         // NG
         assert!(parse_line("hello world 1773,2").is_err());
@@ -527,7 +395,7 @@ mod tests {
     fn test_insert() {
         return;
 
-        let data = vec![
+        let lines = vec![
             "powa\t2012,4,35\t2015,53,165",
             "dousite\t2010,11,31\t2020,61,172",
             "meu powa\t2006,11,30\t2024,61,176",
@@ -540,8 +408,11 @@ mod tests {
             "very nemu meu powa nemu\t1440,17,537\t2005,23,48\t1214,534,12",
         ];
 
+        let data: Vec<Data> = lines.iter().map(|l| parse_line(l).unwrap()).collect();
+        println!("{:?}", &data);
+
         let conn = SqliteConnection::establish("build/download.test.sqlite").unwrap();
 
-        data.iter().try_for_each(|d| save_line(&conn, d)).unwrap();
+        save(&conn, &data).unwrap();
     }
 }

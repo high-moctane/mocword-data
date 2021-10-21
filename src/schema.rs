@@ -1,16 +1,7 @@
 table! {
     fetched_files (n, idx) {
-        n -> SmallInt,
-        idx -> SmallInt,
-    }
-}
-
-table! {
-    five_gram_entries (five_gram_id, year) {
-        five_gram_id -> BigInt,
-        year -> SmallInt,
-        match_count -> BigInt,
-        volume_count -> BigInt,
+        n -> BigInt,
+        idx -> BigInt,
     }
 }
 
@@ -22,15 +13,7 @@ table! {
         word3_id -> BigInt,
         word4_id -> BigInt,
         word5_id -> BigInt,
-    }
-}
-
-table! {
-    four_gram_entries (four_gram_id, year) {
-        four_gram_id -> BigInt,
-        year -> SmallInt,
-        match_count -> BigInt,
-        volume_count -> BigInt,
+        score -> BigInt,
     }
 }
 
@@ -41,15 +24,7 @@ table! {
         word2_id -> BigInt,
         word3_id -> BigInt,
         word4_id -> BigInt,
-    }
-}
-
-table! {
-    one_gram_entries (one_gram_id, year) {
-        one_gram_id -> BigInt,
-        year -> SmallInt,
-        match_count -> BigInt,
-        volume_count -> BigInt,
+        score -> BigInt,
     }
 }
 
@@ -57,15 +32,7 @@ table! {
     one_grams (id) {
         id -> BigInt,
         word1_id -> BigInt,
-    }
-}
-
-table! {
-    three_gram_entries (three_gram_id, year) {
-        three_gram_id -> BigInt,
-        year -> SmallInt,
-        match_count -> BigInt,
-        volume_count -> BigInt,
+        score -> BigInt,
     }
 }
 
@@ -75,15 +42,7 @@ table! {
         word1_id -> BigInt,
         word2_id -> BigInt,
         word3_id -> BigInt,
-    }
-}
-
-table! {
-    two_gram_entries (two_gram_id, year) {
-        two_gram_id -> BigInt,
-        year -> SmallInt,
-        match_count -> BigInt,
-        volume_count -> BigInt,
+        score -> BigInt,
     }
 }
 
@@ -92,6 +51,7 @@ table! {
         id -> BigInt,
         word1_id -> BigInt,
         word2_id -> BigInt,
+        score -> BigInt,
     }
 }
 
@@ -102,24 +62,18 @@ table! {
     }
 }
 
-joinable!(five_gram_entries -> five_grams (five_gram_id));
-joinable!(four_gram_entries -> four_grams (four_gram_id));
-joinable!(one_gram_entries -> one_grams (one_gram_id));
 joinable!(one_grams -> words (word1_id));
-joinable!(three_gram_entries -> three_grams (three_gram_id));
-joinable!(two_gram_entries -> two_grams (two_gram_id));
+joinable!(two_grams -> words (word1_id));
+joinable!(three_grams -> words (word1_id));
+joinable!(four_grams -> words (word1_id));
+joinable!(five_grams -> words (word1_id));
 
 allow_tables_to_appear_in_same_query!(
     fetched_files,
-    five_gram_entries,
     five_grams,
-    four_gram_entries,
     four_grams,
-    one_gram_entries,
     one_grams,
-    three_gram_entries,
     three_grams,
-    two_gram_entries,
     two_grams,
     words,
 );
