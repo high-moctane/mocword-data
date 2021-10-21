@@ -1,0 +1,20 @@
+FROM lukemathwalker/cargo-chef:latest-rust-1.55.0
+WORKDIR /app
+
+RUN set -xe \
+    && apt-get update \
+    && apt-get install sqlite3 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install diesel_cli --no-default-features --features sqlite \
+    && true
+
+COPY recipe.json .
+RUN cargo chef cook --recipe-path recipe.json
+
+COPY . .
+RUN set -xe \
+    && diesel migration run --database-url download.sqlite \
+    && true
+
+ENTRYPOINT ["make", "_docker_test"]
