@@ -2,6 +2,10 @@ DOCKER_COMPOSE_DOWNLOAD := docker-compose \
 		-f docker-compose.download.yml \
 		-p mocword_download
 
+DOCKER_COMPOSE_TEST := docker-compose \
+		-f docker-compose.test.yml \
+		-p mocword_test
+
 
 .PHONY: build
 build:
@@ -14,20 +18,21 @@ build-download:
 
 .PHONY: clean
 clean:
-	$(DOCKER_COMPOSE_DOWNLOAD) down
+	$(DOCKER_COMPOSE_DOWNLOAD) down --rmi local --volumes --remove-orphans
+	$(DOCKER_COMPOSE_TEST) down --rmi local --volumes --remove-orphans
 	cargo clean
-	$(RM) -rf build/*.sqlite
 
 
 .PHONY: download
 download:
-	$(DOCKER_COMPOSE_DOWNLOAD) up --abort-on-container-exit --build --remove-orphans
+	$(DOCKER_COMPOSE_DOWNLOAD) build
+	$(DOCKER_COMPOSE_DOWNLOAD) run --rm
 
 
-.PHONY: _docker_download
-_docker_download:
-	test -e /app/build/download.sqlite || cp download.sqlite /app/build/download.sqlite
-	cargo run --release --bin mocword_download
+.PHONY: test
+test:
+	$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --build --remove-orphans
+	$(DOCKER_COMPOSE_TEST) run --rm
 
 
 .PHONY: tool
@@ -39,3 +44,16 @@ tool:
 .PHONY: chef
 chef:
 	cargo chef prepare --recipe-path recipe.json
+
+
+.PHONY: _docker_download
+_docker_download:
+	test -e /app/build/download.sqlite || cp download.sqlite /app/build/download.sqlite
+	cargo run --release --bin mocword_download
+
+
+.PHONY: _docker_test
+_docker_test:
+	mkdir /app/build
+	test -e /app/build/download.sqlite || cp download.sqlite /app/build/download.sqlite
+	cargo test --color always
