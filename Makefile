@@ -26,7 +26,7 @@ clean:
 .PHONY: download
 download:
 	$(DOCKER_COMPOSE_DOWNLOAD) build
-	$(DOCKER_COMPOSE_DOWNLOAD) run --rm
+	$(DOCKER_COMPOSE_DOWNLOAD) run --rm download
 
 
 .PHONY: test
