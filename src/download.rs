@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn test_parse_line() {
         // OK
-        let input = "hello world\t2012,195943,849381 2013,598483,57483 2014,483584,4731";
+        let input = "hello world\t2012,195943,849381\t2013,598483,57483\t2014,483584,4731";
         let want_ngram: Vec<String> = vec!["hello".to_string(), "world".to_string()];
         let want_entries = vec![
             Entry(2012, 195943, 849381),
@@ -528,16 +528,16 @@ mod tests {
         return;
 
         let data = vec![
-            "powa\t2012,4,35 2015,53,165",
-            "dousite\t2010,11,31 2020,61,172",
-            "meu powa\t2006,11,30 2024,61,176",
-            "majika meu\t2001,15,38 2032,54,181",
-            "moyasu meu powa\t2005,23,48 2015,53,165 2016,65,544",
-            "moyasu dousite powa\t2011,17,53 2027,56,167 2013,61,546",
+            "powa\t2012,4,35\t2015,53,165",
+            "dousite\t2010,11,31\t2020,61,172",
+            "meu powa\t2006,11,30\t2024,61,176",
+            "majika meu\t2001,15,38\t2032,54,181",
+            "moyasu meu powa\t2005,23,48\t2015,53,165\t2016,65,544",
+            "moyasu dousite powa\t2011,17,53\t2027,56,167\t2013,61,546",
             "very moyasu meu powa\t2005,23,48",
             "moctane very moyasu powa\t1999,35,55",
-            "very moyasu meu powa nemu\t1434,23,534 2005,23,48 1214,534,12",
-            "very nemu meu powa nemu\t1440,17,537 2005,23,48 1214,534,12",
+            "very moyasu meu powa nemu\t1434,23,534\t2005,23,48\t1214,534,12",
+            "very nemu meu powa nemu\t1440,17,537\t2005,23,48\t1214,534,12",
         ];
 
         let conn = SqliteConnection::establish("build/download.test.sqlite").unwrap();
