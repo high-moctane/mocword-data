@@ -526,7 +526,6 @@ dependencies = [
  "flate2",
  "reqwest",
  "thiserror",
- "url",
 ]
 
 [[package]]
