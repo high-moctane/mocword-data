@@ -31,8 +31,8 @@ download:
 
 .PHONY: test
 test:
-	$(DOCKER_COMPOSE_TEST) up --abort-on-container-exit --build --remove-orphans
-	$(DOCKER_COMPOSE_TEST) run --rm
+	$(DOCKER_COMPOSE_TEST) build
+	$(DOCKER_COMPOSE_TEST) run --rm test
 
 
 .PHONY: tool
