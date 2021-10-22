@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{prelude::*, BufRead, BufReader};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use flate2::bufread::GzDecoder;
@@ -71,7 +71,8 @@ fn gz_url(lang: &Language, n: i8, idx: i64) -> String {
 }
 
 pub fn run() -> Result<()> {
-    let conn = SqliteConnection::establish("build/download.sqlite")?;
+    let conn = SqliteConnection::establish("build/download.sqlite")
+        .with_context(|| "failed to establish sqlite connection")?;
 
     download(&conn, &Language::English, 5, 10000)?;
 
@@ -83,20 +84,22 @@ fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i64) -> Result
 
     let mut body = vec![];
 
-    blocking::get(&url)?.read_to_end(&mut body)?;
+    blocking::get(&url)?
+        .read_to_end(&mut body)
+        .with_context(|| format!("failed to download {}", &url))?;
     let gz = GzDecoder::new(&body[..]);
 
     let mut data = vec![];
 
     for line in BufReader::new(gz).lines() {
-        data.push(parse_line(&line?)?);
+        data.push(parse_line(&line?).context("failed to parse line")?);
         if data.len() >= 10000 {
-            save(conn, &data)?;
+            save(conn, &data).context("failed to save data")?;
             data = vec![];
         }
     }
     if data.len() > 0 {
-        save(conn, &data)?;
+        save(conn, &data).context("failed to save data")?;
     }
 
     Ok(())
@@ -125,7 +128,8 @@ struct Entry {
 
 fn save(conn: &SqliteConnection, data: &[Data]) -> Result<()> {
     let words: Vec<String> = data.iter().map(|d| d.ngram.clone()).flatten().collect();
-    let word_records = save_words(conn, words.as_slice())?;
+    let word_records = save_words(conn, words.as_slice())
+        .with_context(|| format!("failed to save words: {:?}", &words))?;
 
     let mut word_ids = HashMap::new();
     for rec in word_records.iter() {
@@ -144,18 +148,19 @@ fn save(conn: &SqliteConnection, data: &[Data]) -> Result<()> {
         })
         .collect();
 
-    save_records(conn, &records)?;
+    save_records(conn, &records)
+        .with_context(|| format!("failed to save records: {:?}", &records))?;
 
     Ok(())
 }
 
 fn save_records(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
     match records[0].ngram.len() {
-        1 => save_one_grams(conn, records)?,
-        2 => save_two_grams(conn, records)?,
-        3 => save_three_grams(conn, records)?,
-        4 => save_four_grams(conn, records)?,
-        5 => save_five_grams(conn, records)?,
+        1 => save_one_grams(conn, records).context("failed to save records")?,
+        2 => save_two_grams(conn, records).context("failed to save records")?,
+        3 => save_three_grams(conn, records).context("failed to save records")?,
+        4 => save_four_grams(conn, records).context("failed to save records")?,
+        5 => save_five_grams(conn, records).context("failed to save records")?,
         _ => panic!("invalid ngram: {:?}", records),
     };
 
@@ -181,7 +186,8 @@ fn parse_line(line: &str) -> Result<Data> {
     }
 
     let ngram = parse_ngram(ngram_entries[0]);
-    let entries = parse_entries(&ngram_entries[1..])?;
+    let entries = parse_entries(&ngram_entries[1..])
+        .with_context(|| format!("failed to parse entries: {:?}", &ngram_entries[1..]))?;
     let score = calc_score(&entries);
 
     Ok(Data { ngram, score })
@@ -194,7 +200,7 @@ fn parse_ngram(ngram_vec: &str) -> Vec<String> {
 fn parse_entries(entries: &[&str]) -> Result<Vec<Entry>> {
     let mut res = Vec::new();
     for s in entries.iter() {
-        res.push(parse_entry(s)?);
+        res.push(parse_entry(s).with_context(|| format!("failed to parse entry: {:?}", s))?);
     }
     Ok(res)
 }
@@ -206,9 +212,15 @@ fn parse_entry(entry: &str) -> Result<Entry> {
     }
 
     Ok(Entry {
-        year: elems[0].parse()?,
-        match_count: elems[1].parse()?,
-        volume_count: elems[2].parse()?,
+        year: elems[0]
+            .parse()
+            .with_context(|| format!("failed to parse elems0: {}", elems[0]))?,
+        match_count: elems[1]
+            .parse()
+            .with_context(|| format!("failed to parse elems1: {}", elems[1]))?,
+        volume_count: elems[2]
+            .parse()
+            .with_context(|| format!("failed to parse elems2: {}", elems[2]))?,
     })
 }
 
@@ -231,7 +243,8 @@ fn save_one_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
 
     diesel::insert_or_ignore_into(dsl::one_grams)
         .values(&one_grams)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save one grams: {:?}", &one_grams))?;
 
     Ok(())
 }
@@ -250,7 +263,8 @@ fn save_two_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
 
     diesel::insert_or_ignore_into(dsl::two_grams)
         .values(&two_grams)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save two grams: {:?}", &two_grams))?;
 
     Ok(())
 }
@@ -270,7 +284,8 @@ fn save_three_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
 
     diesel::insert_or_ignore_into(dsl::three_grams)
         .values(&three_grams)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save three grams: {:?}", &three_grams))?;
 
     Ok(())
 }
@@ -291,7 +306,8 @@ fn save_four_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
 
     diesel::insert_or_ignore_into(dsl::four_grams)
         .values(&four_grams)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save four grams: {:?}", &four_grams))?;
 
     Ok(())
 }
@@ -313,7 +329,8 @@ fn save_five_grams(conn: &SqliteConnection, records: &[Record]) -> Result<()> {
 
     diesel::insert_or_ignore_into(dsl::five_grams)
         .values(&five_grams)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save five grams: {:?}", &five_grams))?;
 
     Ok(())
 }
@@ -336,14 +353,16 @@ fn save_words(conn: &SqliteConnection, words: &[String]) -> Result<Vec<models::W
 
     diesel::insert_or_ignore_into(dsl::words)
         .values(&new_words)
-        .execute(conn)?;
+        .execute(conn)
+        .with_context(|| format!("failed to save words: {:?}", &new_words))?;
 
     let mut res = vec![];
 
     for word in unique_words.iter() {
         let word_record = schema::words::dsl::words
             .filter(dsl::word.eq_all(word.clone()))
-            .load::<models::Word>(conn)?;
+            .load::<models::Word>(conn)
+            .with_context(|| format!("failed to load words: {:?}", words))?;
         res.push(word_record);
     }
 
