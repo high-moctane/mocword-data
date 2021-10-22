@@ -13,7 +13,7 @@ pub struct Word {
     pub word: String,
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "words"]
 pub struct NewWord {
     pub word: String,
@@ -36,7 +36,7 @@ impl Ngram for OneGram {
     }
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "one_grams"]
 pub struct NewOneGram {
     pub word1_id: i64,
@@ -61,7 +61,7 @@ impl Ngram for TwoGram {
     }
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "two_grams"]
 pub struct NewTwoGram {
     pub word1_id: i64,
@@ -88,7 +88,7 @@ impl Ngram for ThreeGram {
     }
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "three_grams"]
 pub struct NewThreeGram {
     pub word1_id: i64,
@@ -117,7 +117,7 @@ impl Ngram for FourGram {
     }
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "four_grams"]
 pub struct NewFourGram {
     pub word1_id: i64,
@@ -148,7 +148,7 @@ impl Ngram for FiveGram {
     }
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "five_grams"]
 pub struct NewFiveGram {
     pub word1_id: i64,
