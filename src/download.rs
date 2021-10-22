@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{prelude::*, BufRead, BufReader};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, Result};
 use diesel::prelude::*;
@@ -13,7 +15,7 @@ use crate::schema;
 
 static BUILD_DST: &str = "build";
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum Language {
     English,
     AmericanEnglish,
@@ -44,7 +46,7 @@ impl Language {
     }
 }
 
-fn total_file_num(lang: &Language, n: i8) -> i64 {
+fn total_file_num(lang: &Language, n: i64) -> i64 {
     match lang {
         Language::English => match n {
             1 => 24,
@@ -58,7 +60,7 @@ fn total_file_num(lang: &Language, n: i8) -> i64 {
     }
 }
 
-fn gz_url(lang: &Language, n: i8, idx: i64) -> String {
+fn gz_url(lang: &Language, n: i64, idx: i64) -> String {
     let total = total_file_num(lang, n);
 
     format!(
@@ -74,12 +76,50 @@ pub fn run() -> Result<()> {
     let conn = SqliteConnection::establish("build/download.sqlite")
         .with_context(|| "failed to establish sqlite connection")?;
 
-    download(&conn, &Language::English, 5, 10000)?;
+    download_all(&conn, &Language::English).with_context(|| format!("failed to download all"))?;
 
     Ok(())
 }
 
-fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i64) -> Result<()> {
+fn download_all(conn: &SqliteConnection, lang: &Language) -> Result<()> {
+    let mut all = (1..=5).fold(0, |acc, n| acc + total_file_num(lang, n));
+
+    for n in 1..=5 {
+        let total = total_file_num(lang, n);
+        for idx in 0..total {
+            println!("remains: {}", all);
+            all -= 1;
+
+            println!("start: {}gram, {} of {}", n, idx, total);
+
+            download(conn, lang, n, idx).with_context(|| {
+                format!(
+                    "failed to download: {}, n: {}, idx: {}",
+                    lang.url_name(),
+                    n,
+                    idx
+                )
+            })?;
+
+            println!("end:   {}gram, {} of {}", n, idx, total);
+        }
+    }
+
+    Ok(())
+}
+
+fn download(conn: &SqliteConnection, lang: &Language, n: i64, idx: i64) -> Result<()> {
+    use schema::fetched_files::dsl;
+
+    let res = dsl::fetched_files
+        .filter(dsl::n.eq_all(n))
+        .filter(dsl::idx.eq_all(idx))
+        .load::<models::FetchedFile>(conn)?;
+
+    if res.len() > 0 {
+        return Ok(());
+    }
+
     let url = gz_url(lang, n, idx);
 
     let mut body = vec![];
@@ -101,6 +141,12 @@ fn download(conn: &SqliteConnection, lang: &Language, n: i8, idx: i64) -> Result
     if data.len() > 0 {
         save(conn, &data).context("failed to save data")?;
     }
+
+    let new_fetched_file = models::NewFetchedFile { n, idx };
+    diesel::insert_or_ignore_into(dsl::fetched_files)
+        .values(&new_fetched_file)
+        .execute(conn)
+        .with_context(|| format!("failed to save fetched file: {} {}", n, idx))?;
 
     Ok(())
 }
@@ -177,6 +223,9 @@ pub enum DownloadError {
 
     #[error("invalid entry: {0}")]
     InvalidEntry(String),
+
+    #[error("invalid query: {0}, {1}: {2}")]
+    InvalidQuery(i64, i64, String),
 }
 
 fn parse_line(line: &str) -> Result<Data> {
