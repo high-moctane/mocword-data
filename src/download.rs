@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{prelude::*, BufRead, BufReader};
-use std::sync::mpsc;
-use std::thread;
 
 use anyhow::{Context, Result};
+use chrono::Local;
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use flate2::bufread::GzDecoder;
@@ -12,8 +11,6 @@ use thiserror::Error;
 
 use crate::models;
 use crate::schema;
-
-static BUILD_DST: &str = "build";
 
 #[derive(Debug, Copy, Clone)]
 enum Language {
@@ -90,7 +87,7 @@ fn download_all(conn: &SqliteConnection, lang: &Language) -> Result<()> {
             println!("remains: {}", all);
             all -= 1;
 
-            println!("start: {}gram, {} of {}", n, idx, total);
+            println!("{} start: {}gram, {} of {}", Local::now(), n, idx, total);
 
             download(conn, lang, n, idx).with_context(|| {
                 format!(
@@ -101,7 +98,7 @@ fn download_all(conn: &SqliteConnection, lang: &Language) -> Result<()> {
                 )
             })?;
 
-            println!("end:   {}gram, {} of {}", n, idx, total);
+            println!("{} end:   {}gram, {} of {}", Local::now(), n, idx, total);
         }
     }
 
