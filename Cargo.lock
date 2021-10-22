@@ -522,6 +522,7 @@ name = "mocword"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "diesel",
  "flate2",
  "reqwest",
