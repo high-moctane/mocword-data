@@ -89,14 +89,17 @@ fn download_all(conn: &SqliteConnection, lang: &Language) -> Result<()> {
 
             println!("{} start: {}gram, {} of {}", Local::now(), n, idx, total);
 
-            download(conn, lang, n, idx).with_context(|| {
-                format!(
-                    "failed to download: {}, n: {}, idx: {}",
-                    lang.url_name(),
-                    n,
-                    idx
-                )
-            })?;
+            conn.transaction(|| {
+                download(conn, lang, n, idx).with_context(|| {
+                    format!(
+                        "failed to download: {}, n: {}, idx: {}",
+                        lang.url_name(),
+                        n,
+                        idx
+                    )
+                })
+            })
+            .context("failed to transaction")?;
 
             println!("{} end:   {}gram, {} of {}", Local::now(), n, idx, total);
         }
@@ -477,7 +480,6 @@ mod tests {
         println!("{:?}", &data);
 
         let conn = SqliteConnection::establish("build/download.test.sqlite").unwrap();
-
         save(&conn, &data).unwrap();
     }
 }
