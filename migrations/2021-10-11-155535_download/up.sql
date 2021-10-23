@@ -5,7 +5,7 @@ create table words (
 
 create table one_grams (
     id       integer primary key autoincrement,
-    word1_id integer not null unique,
+    word1_id integer not null,
     score    integer not null,
 
     constraint fk_one_grams_word1_id
@@ -13,8 +13,6 @@ create table one_grams (
         references words(id)
         on delete cascade
 );
-
-create index idx_one_grams_score on one_grams(score);
 
 create table two_grams (
     id       integer primary key autoincrement,
@@ -31,9 +29,6 @@ create table two_grams (
         references words(id)
         on delete cascade
 );
-
-create unique index idx_two_grams on two_grams(word1_id, word2_id);
-create index idx_two_grams_score on two_grams(score);
 
 create table three_grams (
     id       integer primary key autoincrement,
@@ -55,9 +50,6 @@ create table three_grams (
         references words(id)
         on delete cascade
 );
-
-create unique index idx_three_grams on three_grams(word1_id, word2_id, word3_id);
-create index idx_three_grams_score on three_grams(score);
 
 create table four_grams (
     id       integer primary key autoincrement,
@@ -84,9 +76,6 @@ create table four_grams (
         references words(id)
         on delete cascade
 );
-
-create unique index idx_four_grams on four_grams(word1_id, word2_id, word3_id, word4_id);
-create index idx_four_grams_score on four_grams(score);
 
 create table five_grams (
     id       integer primary key autoincrement,
@@ -118,9 +107,6 @@ create table five_grams (
         references words(id)
         on delete cascade
 );
-
-create unique index idx_five_grams on five_grams(word1_id, word2_id, word3_id, word4_id, word5_id);
-create index idx_five_grams_score on four_grams(score);
 
 create table fetched_files (
     n   integer not null,
