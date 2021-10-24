@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use crossbeam::channel;
@@ -18,6 +20,7 @@ use crate::schema;
 
 static DST_DIR: &str = "build";
 static WORKER_NUM: usize = 4;
+static FREQ_WORD_NUM: usize = 10_000_000;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Language {
@@ -109,6 +112,12 @@ struct Entry {
     volume_count: i64,
 }
 
+#[derive(Debug, PartialEq)]
+struct IndexedData {
+    ngram: Vec<i64>,
+    score: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Query {
     lang: Language,
@@ -131,6 +140,9 @@ fn download_all(lang: &Language) -> Result<()> {
     let sqlite_one_gram = format!("{}/download.sqlite", DST_DIR);
     download_one_grams(&sqlite_one_gram, lang)
         .with_context(|| format!("failed to download one gram to {}", &sqlite_one_gram))?;
+    let freq_words = fetch_freq_words(&sqlite_one_gram, FREQ_WORD_NUM)
+        .with_context(|| format!("failed to fetch freq words: {}", &sqlite_one_gram))?;
+    let freq_words = Arc::new(freq_words);
 
     // 2-gram
     let filenames = db_clone(&sqlite_one_gram, WORKER_NUM)
@@ -138,10 +150,12 @@ fn download_all(lang: &Language) -> Result<()> {
 
     let pool = ThreadPool::new(WORKER_NUM);
     let (tx, rx): (channel::Sender<Query>, channel::Receiver<Query>) = channel::unbounded();
-    let n_sentinel = 10000;
     for filename in filenames.into_iter() {
         let rx = rx.clone();
-        pool.execute(move || download_ngrams(&filename, &rx).expect("failed to download_ngrams"));
+        let freq_words = Arc::clone(&freq_words);
+        pool.execute(move || {
+            download_ngrams(&filename, &rx, freq_words).expect("failed to download_ngrams")
+        });
     }
 
     for n in 2..=5 {
@@ -156,7 +170,7 @@ fn download_all(lang: &Language) -> Result<()> {
     for _ in 0..WORKER_NUM {
         tx.send(Query {
             lang: lang.clone().to_owned(),
-            n: n_sentinel,
+            n: 10000,
             idx: 0,
         })?;
     }
@@ -166,7 +180,37 @@ fn download_all(lang: &Language) -> Result<()> {
     Ok(())
 }
 
-fn download_ngrams(filename: &str, rx: &channel::Receiver<Query>) -> Result<()> {
+fn fetch_freq_words(filename: &str, num: usize) -> Result<HashMap<String, i64>> {
+    use schema::one_grams::dsl;
+
+    let conn = SqliteConnection::establish(filename)
+        .with_context(|| format!("failed to connect {}", filename))?;
+
+    let mut res = HashMap::new();
+
+    let freq_words = dsl::one_grams
+        .order_by(dsl::score.desc())
+        .limit(num as i64)
+        .load::<models::OneGram>(&conn)
+        .with_context(|| {
+            format!(
+                "failed to fetch freq words from {} limit {}",
+                &filename, num
+            )
+        })?;
+
+    for freq_word in freq_words.into_iter() {
+        res.insert(freq_word.word, freq_word.id);
+    }
+
+    Ok(res)
+}
+
+fn download_ngrams(
+    filename: &str,
+    rx: &channel::Receiver<Query>,
+    freq_words: Arc<HashMap<String, i64>>,
+) -> Result<()> {
     let conn = SqliteConnection::establish(filename)
         .with_context(|| format!("failed to connect {}", filename))?;
 
@@ -175,7 +219,7 @@ fn download_ngrams(filename: &str, rx: &channel::Receiver<Query>) -> Result<()> 
             return Ok(());
         }
         conn.transaction(|| {
-            download_ngram(&conn, &query)
+            download_ngram(&conn, &query, &freq_words)
                 .with_context(|| format!("failed to download ngram {:?}", query))
         })
         .with_context(|| format!("failed to transaction {:?}", &query))?;
@@ -184,7 +228,11 @@ fn download_ngrams(filename: &str, rx: &channel::Receiver<Query>) -> Result<()> 
     panic!("unexpected drop of rx");
 }
 
-fn download_ngram(conn: &SqliteConnection, query: &Query) -> Result<()> {
+fn download_ngram(
+    conn: &SqliteConnection,
+    query: &Query,
+    freq_words: &Arc<HashMap<String, i64>>,
+) -> Result<()> {
     let lang = &query.lang;
     let n = query.n;
     let idx = query.idx;
@@ -208,7 +256,8 @@ fn download_ngram(conn: &SqliteConnection, query: &Query) -> Result<()> {
     let all_data = parse_body(body).context("failed to parse body")?;
 
     // Saving
-    save_ngrams(&conn, n, all_data).with_context(|| format!("failed to save {} {}", n, idx))?;
+    save_ngrams(&conn, n, all_data, freq_words)
+        .with_context(|| format!("failed to save {} {}", n, idx))?;
 
     // Flagging
     save_flag(&conn, n, idx).context("failed to save flag")?;
@@ -218,8 +267,163 @@ fn download_ngram(conn: &SqliteConnection, query: &Query) -> Result<()> {
     Ok(())
 }
 
-fn save_ngrams(conn: &SqliteConnection, n: i64, all_data: Vec<Data>) -> Result<()> {
-    unimplemented!();
+fn save_ngrams(
+    conn: &SqliteConnection,
+    n: i64,
+    all_data: Vec<Data>,
+    freq_words: &Arc<HashMap<String, i64>>,
+) -> Result<()> {
+    let all_indexed_data = new_indexed_data(conn, all_data, freq_words)
+        .with_context(|| format!("failed to new indexed data"))?;
+
+    match n {
+        2 => save_two_grams(conn, all_indexed_data).context("failed to save two grams"),
+        3 => save_three_grams(conn, all_indexed_data).context("failed to save three grams"),
+        4 => save_four_grams(conn, all_indexed_data).context("failed to save four grams"),
+        5 => save_five_grams(conn, all_indexed_data).context("failed to save five grams"),
+        _ => panic!("invalid n: {}", n),
+    }
+}
+
+fn save_two_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
+    use schema::two_grams::dsl;
+
+    let new_two_grams: Vec<models::NewTwoGram> = all_indexed_data
+        .into_iter()
+        .map(|d| models::NewTwoGram {
+            word1_id: d.ngram[0],
+            word2_id: d.ngram[1],
+            score: d.score,
+        })
+        .collect();
+
+    diesel::insert_into(dsl::two_grams)
+        .values(&new_two_grams)
+        .execute(conn)
+        .context("failed to save two grams")?;
+
+    Ok(())
+}
+
+fn save_three_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
+    use schema::three_grams::dsl;
+
+    let new_three_grams: Vec<models::NewThreeGram> = all_indexed_data
+        .into_iter()
+        .map(|d| models::NewThreeGram {
+            word1_id: d.ngram[0],
+            word2_id: d.ngram[1],
+            word3_id: d.ngram[2],
+            score: d.score,
+        })
+        .collect();
+
+    diesel::insert_into(dsl::three_grams)
+        .values(&new_three_grams)
+        .execute(conn)
+        .context("failed to save three grams")?;
+
+    Ok(())
+}
+
+fn save_four_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
+    use schema::four_grams::dsl;
+
+    let new_four_grams: Vec<models::NewFourGram> = all_indexed_data
+        .into_iter()
+        .map(|d| models::NewFourGram {
+            word1_id: d.ngram[0],
+            word2_id: d.ngram[1],
+            word3_id: d.ngram[2],
+            word4_id: d.ngram[3],
+            score: d.score,
+        })
+        .collect();
+
+    diesel::insert_into(dsl::four_grams)
+        .values(&new_four_grams)
+        .execute(conn)
+        .context("failed to save four grams")?;
+
+    Ok(())
+}
+
+fn save_five_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
+    use schema::five_grams::dsl;
+
+    let new_five_grams: Vec<models::NewFiveGram> = all_indexed_data
+        .into_iter()
+        .map(|d| models::NewFiveGram {
+            word1_id: d.ngram[0],
+            word2_id: d.ngram[1],
+            word3_id: d.ngram[2],
+            word4_id: d.ngram[3],
+            word5_id: d.ngram[4],
+            score: d.score,
+        })
+        .collect();
+
+    diesel::insert_into(dsl::five_grams)
+        .values(&new_five_grams)
+        .execute(conn)
+        .context("failed to save five grams")?;
+
+    Ok(())
+}
+
+fn new_indexed_data(
+    conn: &SqliteConnection,
+    all_data: Vec<Data>,
+    freq_words: &Arc<HashMap<String, i64>>,
+) -> Result<Vec<IndexedData>> {
+    let mut res = vec![];
+
+    'dataloop: for data in all_data.into_iter() {
+        let mut indexed_ngram = vec![];
+        for word in data.ngram.iter() {
+            let index = fetch_word_index(conn, freq_words, word)
+                .with_context(|| format!("failed to fetch word index: {}", word))?;
+            match index {
+                Some(idx) => indexed_ngram.push(idx),
+                None => {
+                    warn!("word not found in one_grams: {}", word);
+                    continue 'dataloop;
+                }
+            }
+
+            res.push(IndexedData {
+                ngram: indexed_ngram.to_owned(),
+                score: data.score,
+            });
+        }
+    }
+
+    Ok(res)
+}
+
+fn fetch_word_index(
+    conn: &SqliteConnection,
+    freq_words: &Arc<HashMap<String, i64>>,
+    word: &str,
+) -> Result<Option<i64>> {
+    use schema::one_grams::dsl;
+
+    let res = match freq_words.get(word) {
+        Some(idx) => Some(idx.clone().to_owned()),
+        None => {
+            let word_record = dsl::one_grams
+                .filter(dsl::word.eq_all(word))
+                .load::<models::OneGram>(conn)
+                .with_context(|| format!("failed to load one gram word: {}", word))?;
+            match word_record.len() {
+                0 => None,
+                1 => Some(word_record[0].id.to_owned()),
+                _ => panic!("one_grams data duplicated: {}", word),
+            }
+        }
+    };
+
+    Ok(res)
 }
 
 fn download_one_grams(filename: &str, lang: &Language) -> Result<()> {
@@ -310,7 +514,7 @@ fn save_one_grams(conn: &SqliteConnection, all_data: Vec<Data>) -> Result<()> {
     use schema::one_grams::dsl;
 
     let new_one_grams: Vec<models::NewOneGram> = all_data
-        .iter()
+        .into_iter()
         .map(|d| models::NewOneGram {
             word: d.ngram[0].to_owned(),
             score: d.score,
