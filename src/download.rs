@@ -290,7 +290,21 @@ fn save_ngrams(
 fn save_two_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
     use schema::two_grams::dsl;
 
-    let new_two_grams: Vec<models::NewTwoGram> = all_indexed_data
+    let mut verified_all_indexed_data = vec![];
+
+    for data in all_indexed_data.into_iter() {
+        if data.ngram.len() != 2 {
+            warn!("ngram len is not 2: {:?}", &data);
+            continue;
+        }
+        if data.score < 0 {
+            warn!("negative score: {:?}", &data);
+            continue;
+        }
+        verified_all_indexed_data.push(data);
+    }
+
+    let new_two_grams: Vec<models::NewTwoGram> = verified_all_indexed_data
         .into_iter()
         .map(|d| models::NewTwoGram {
             word1_id: d.ngram[0],
@@ -310,7 +324,21 @@ fn save_two_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -
 fn save_three_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
     use schema::three_grams::dsl;
 
-    let new_three_grams: Vec<models::NewThreeGram> = all_indexed_data
+    let mut verified_all_indexed_data = vec![];
+
+    for data in all_indexed_data.into_iter() {
+        if data.ngram.len() != 3 {
+            warn!("ngram len is not 3: {:?}", &data);
+            continue;
+        }
+        if data.score < 0 {
+            warn!("negative score: {:?}", &data);
+            continue;
+        }
+        verified_all_indexed_data.push(data);
+    }
+
+    let new_three_grams: Vec<models::NewThreeGram> = verified_all_indexed_data
         .into_iter()
         .map(|d| models::NewThreeGram {
             word1_id: d.ngram[0],
@@ -331,7 +359,21 @@ fn save_three_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>)
 fn save_four_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
     use schema::four_grams::dsl;
 
-    let new_four_grams: Vec<models::NewFourGram> = all_indexed_data
+    let mut verified_all_indexed_data = vec![];
+
+    for data in all_indexed_data.into_iter() {
+        if data.ngram.len() != 4 {
+            warn!("ngram len is not 4: {:?}", &data);
+            continue;
+        }
+        if data.score < 0 {
+            warn!("negative score: {:?}", &data);
+            continue;
+        }
+        verified_all_indexed_data.push(data);
+    }
+
+    let new_four_grams: Vec<models::NewFourGram> = verified_all_indexed_data
         .into_iter()
         .map(|d| models::NewFourGram {
             word1_id: d.ngram[0],
@@ -353,7 +395,21 @@ fn save_four_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) 
 fn save_five_grams(conn: &SqliteConnection, all_indexed_data: Vec<IndexedData>) -> Result<()> {
     use schema::five_grams::dsl;
 
-    let new_five_grams: Vec<models::NewFiveGram> = all_indexed_data
+    let mut verified_all_indexed_data = vec![];
+
+    for data in all_indexed_data.into_iter() {
+        if data.ngram.len() != 5 {
+            warn!("ngram len is not 5: {:?}", &data);
+            continue;
+        }
+        if data.score < 0 {
+            warn!("negative score: {:?}", &data);
+            continue;
+        }
+        verified_all_indexed_data.push(data);
+    }
+
+    let new_five_grams: Vec<models::NewFiveGram> = verified_all_indexed_data
         .into_iter()
         .map(|d| models::NewFiveGram {
             word1_id: d.ngram[0],
@@ -380,18 +436,34 @@ fn new_indexed_data(
 ) -> Result<Vec<IndexedData>> {
     let mut res = vec![];
 
+    let mut cache: HashMap<String, Option<i64>> = HashMap::new();
+
     'dataloop: for data in all_data.into_iter() {
         let mut indexed_ngram = vec![];
         for word in data.ngram.iter() {
-            let index = fetch_word_index(conn, freq_words, word)
-                .with_context(|| format!("failed to fetch word index: {}", word))?;
-            match index {
-                Some(idx) => indexed_ngram.push(idx),
+            let index = match cache.get(word) {
+                Some(opt_idx) => match opt_idx {
+                    Some(idx) => idx.clone().to_owned(),
+                    None => {
+                        warn!("word not found in one_gram: {}", word);
+                        continue 'dataloop;
+                    }
+                },
                 None => {
-                    warn!("word not found in one_grams: {}", word);
-                    continue 'dataloop;
+                    let opt_idx = fetch_word_index(conn, freq_words, word)
+                        .with_context(|| format!("failed to fetch word index: {}", word))?;
+                    cache.insert(word.to_owned(), opt_idx);
+                    match opt_idx {
+                        Some(idx) => idx,
+                        None => {
+                            warn!("word not found in one_gram: {}", word);
+                            continue 'dataloop;
+                        }
+                    }
                 }
-            }
+            };
+
+            indexed_ngram.push(index);
 
             res.push(IndexedData {
                 ngram: indexed_ngram.to_owned(),
@@ -515,7 +587,21 @@ fn save_flag(conn: &SqliteConnection, n: i64, idx: i64) -> Result<()> {
 fn save_one_grams(conn: &SqliteConnection, all_data: Vec<Data>) -> Result<()> {
     use schema::one_grams::dsl;
 
-    let new_one_grams: Vec<models::NewOneGram> = all_data
+    let mut verified_all_data = vec![];
+
+    for data in all_data.into_iter() {
+        if data.ngram.len() != 1 {
+            warn!("ngram len is not 1: {:?}", &data);
+            continue;
+        }
+        if data.score < 0 {
+            warn!("negative score: {:?}", &data);
+            continue;
+        }
+        verified_all_data.push(data);
+    }
+
+    let new_one_grams: Vec<models::NewOneGram> = verified_all_data
         .into_iter()
         .map(|d| models::NewOneGram {
             word: d.ngram[0].to_owned(),
