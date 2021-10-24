@@ -5,10 +5,10 @@ pub trait Ngram {
     fn get_id(&self) -> i64;
 }
 
-#[derive(Queryable, Copy, Clone)]
+#[derive(Queryable, Clone)]
 pub struct OneGram {
     pub id: i64,
-    pub word1_id: i64,
+    pub word: String,
     pub score: i64,
 }
 
