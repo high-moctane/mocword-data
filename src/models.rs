@@ -1,22 +1,8 @@
-use crate::schema::{
-    fetched_files, five_grams, four_grams, one_grams, three_grams, two_grams, words,
-};
+use crate::schema::{fetched_files, five_grams, four_grams, one_grams, three_grams, two_grams};
 
 pub trait Ngram {
     fn n(&self) -> i64;
     fn get_id(&self) -> i64;
-}
-
-#[derive(Queryable)]
-pub struct Word {
-    pub id: i64,
-    pub word: String,
-}
-
-#[derive(Insertable, Debug)]
-#[table_name = "words"]
-pub struct NewWord {
-    pub word: String,
 }
 
 #[derive(Queryable, Copy, Clone)]
@@ -39,7 +25,7 @@ impl Ngram for OneGram {
 #[derive(Insertable, Debug)]
 #[table_name = "one_grams"]
 pub struct NewOneGram {
-    pub word1_id: i64,
+    pub word: String,
     pub score: i64,
 }
 
