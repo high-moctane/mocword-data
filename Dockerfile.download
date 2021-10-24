@@ -1,6 +1,8 @@
 FROM rust:1.55
 WORKDIR /app
 
+ENV RUST_LOG=info
+
 RUN set -xe \
     && apt-get update \
     && apt-get install sqlite3 \
