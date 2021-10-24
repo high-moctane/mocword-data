@@ -31,7 +31,7 @@ table! {
 table! {
     one_grams (id) {
         id -> BigInt,
-        word1_id -> BigInt,
+        word -> Text,
         score -> BigInt,
     }
 }
@@ -55,19 +55,6 @@ table! {
     }
 }
 
-table! {
-    words (id) {
-        id -> BigInt,
-        word -> Text,
-    }
-}
-
-joinable!(one_grams -> words (word1_id));
-joinable!(two_grams -> words (word1_id));
-joinable!(three_grams -> words (word1_id));
-joinable!(four_grams -> words (word1_id));
-joinable!(five_grams -> words (word1_id));
-
 allow_tables_to_appear_in_same_query!(
     fetched_files,
     five_grams,
@@ -75,5 +62,4 @@ allow_tables_to_appear_in_same_query!(
     one_grams,
     three_grams,
     two_grams,
-    words,
 );
