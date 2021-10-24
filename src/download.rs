@@ -1,12 +1,20 @@
 use std::fs;
+use std::io::prelude::*;
+use std::io::BufReader;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use crossbeam::channel;
+use diesel::{self, prelude::*, result, SqliteConnection};
 use env_logger;
+use flate2::bufread::GzDecoder;
 use log::{info, trace, warn};
+use reqwest::blocking;
 use thiserror::Error;
 use threadpool::ThreadPool;
+
+use crate::models;
+use crate::schema;
 
 static DST_DIR: &str = "build";
 static WORKER_NUM: usize = 4;
@@ -121,7 +129,7 @@ pub fn run() -> Result<()> {
 fn download_all(lang: &Language) -> Result<()> {
     // 1-gram
     let sqlite_one_gram = format!("{}/download.sqlite", DST_DIR);
-    download_one_gram(lang, &sqlite_one_gram)
+    download_one_grams(&sqlite_one_gram, lang)
         .with_context(|| format!("failed to download one gram to {}", &sqlite_one_gram))?;
 
     // 2-gram
@@ -133,16 +141,7 @@ fn download_all(lang: &Language) -> Result<()> {
     let n_sentinel = 10000;
     for filename in filenames.into_iter() {
         let rx = rx.clone();
-        pool.execute(move || {
-            trace!("filename: {}", filename);
-            for query in rx.iter() {
-                trace!("recv {:?}", query);
-                if query.n == n_sentinel {
-                    trace!("worker done");
-                    return;
-                }
-            }
-        });
+        pool.execute(move || download_ngrams(&filename, &rx).expect("failed to download_ngrams"));
     }
 
     for n in 2..=5 {
@@ -167,9 +166,187 @@ fn download_all(lang: &Language) -> Result<()> {
     Ok(())
 }
 
-fn download_one_gram(lang: &Language, filename: &str) -> Result<()> {
-    trace!("download one gram");
+fn download_ngrams(filename: &str, rx: &channel::Receiver<Query>) -> Result<()> {
+    let conn = SqliteConnection::establish(filename)
+        .with_context(|| format!("failed to connect {}", filename))?;
+
+    for query in rx.iter() {
+        if query.n > 5 {
+            return Ok(());
+        }
+        conn.transaction(|| {
+            download_ngram(&conn, &query)
+                .with_context(|| format!("failed to download ngram {:?}", query))
+        })
+        .with_context(|| format!("failed to transaction {:?}", &query))?;
+    }
+
+    panic!("unexpected drop of rx");
+}
+
+fn download_ngram(conn: &SqliteConnection, query: &Query) -> Result<()> {
+    let lang = &query.lang;
+    let n = query.n;
+    let idx = query.idx;
+
+    let total = total_file_num(lang, n);
+    info!("start: {}-gram {} of {}", n, idx, total);
+
+    if is_already_downloaded(&conn, n, idx)? {
+        info!("already downloaded {}gram {} of {}", n, idx, total);
+        return Ok(());
+    }
+
+    // Download
+    let url = gz_url(lang, n, idx);
+    let mut body = vec![];
+    blocking::get(&url)?
+        .read_to_end(&mut body)
+        .with_context(|| format!("failed to download {}", &url))?;
+
+    // Parsing
+    let all_data = parse_body(body).context("failed to parse body")?;
+
+    // Saving
+    save_ngrams(&conn, n, all_data).with_context(|| format!("failed to save {} {}", n, idx))?;
+
+    // Flagging
+    save_flag(&conn, n, idx).context("failed to save flag")?;
+
+    info!("end  : {}-gram {} of {}", n, idx, total);
+
     Ok(())
+}
+
+fn save_ngrams(conn: &SqliteConnection, n: i64, all_data: Vec<Data>) -> Result<()> {
+    unimplemented!();
+}
+
+fn download_one_grams(filename: &str, lang: &Language) -> Result<()> {
+    trace!("download one gram");
+
+    let conn = SqliteConnection::establish(filename)
+        .with_context(|| format!("failed to connect {}", filename))?;
+
+    // save
+    let n = 1;
+    for idx in 0..total_file_num(lang, n) {
+        download_one_gram(&conn, lang, idx)
+            .with_context(|| format!("failed to download one gram {}", idx))?;
+    }
+
+    // finalize
+    finalize_one_gram(&conn).with_context(|| format!("failed to finalize {}", filename))?;
+
+    Ok(())
+}
+
+fn finalize_one_gram(conn: &SqliteConnection) -> Result<()> {
+    info!("start: indexing");
+    diesel::sql_query("create unique index idx_one_grams_word on one_grams(word)")
+        .execute(conn)
+        .context("failed to create unique index")?;
+    info!("end  : indexing");
+
+    info!("start: vacuum");
+    diesel::sql_query("vacuum")
+        .execute(conn)
+        .context("failed to vacuum")?;
+    info!("end  : vacuum");
+
+    Ok(())
+}
+
+fn download_one_gram(conn: &SqliteConnection, lang: &Language, idx: i64) -> Result<()> {
+    let n = 1;
+    let total = total_file_num(lang, n);
+    info!("start: 1-gram {} of {}", idx, total);
+
+    if is_already_downloaded(&conn, n, idx)? {
+        info!(
+            "already downloaded {}gram {} of {}",
+            n,
+            idx,
+            total_file_num(lang, n)
+        );
+        return Ok(());
+    }
+
+    // Download
+    let url = gz_url(lang, n, idx);
+    let mut body = vec![];
+    blocking::get(&url)?
+        .read_to_end(&mut body)
+        .with_context(|| format!("failed to download {}", &url))?;
+
+    // Parsing
+    let all_data = parse_body(body).context("failed to parse body")?;
+
+    // Saving
+    save_one_grams(&conn, all_data).with_context(|| format!("failed to save {} {}", n, idx))?;
+
+    // Flagging
+    save_flag(&conn, n, idx).context("failed to save flag")?;
+
+    info!("end  : 1-gram {} of {}", idx, total);
+
+    Ok(())
+}
+
+fn save_flag(conn: &SqliteConnection, n: i64, idx: i64) -> Result<()> {
+    use schema::fetched_files::dsl;
+
+    let new_flag = models::NewFetchedFile { n, idx };
+
+    diesel::insert_into(dsl::fetched_files)
+        .values(&new_flag)
+        .execute(conn)
+        .with_context(|| format!("failed to save flag {} {}", n, idx))?;
+
+    Ok(())
+}
+
+fn save_one_grams(conn: &SqliteConnection, all_data: Vec<Data>) -> Result<()> {
+    use schema::one_grams::dsl;
+
+    let new_one_grams: Vec<models::NewOneGram> = all_data
+        .iter()
+        .map(|d| models::NewOneGram {
+            word: d.ngram[0].to_owned(),
+            score: d.score,
+        })
+        .collect();
+
+    diesel::insert_into(dsl::one_grams)
+        .values(&new_one_grams)
+        .execute(conn)
+        .context("failed to save one grams")?;
+
+    Ok(())
+}
+
+fn parse_body(body: Vec<u8>) -> Result<Vec<Data>> {
+    let gz = GzDecoder::new(&body[..]);
+    let mut data = vec![];
+
+    for line in BufReader::new(gz).lines() {
+        let line = line?;
+        data.push(parse_line(&line).with_context(|| format!("failed to parse line: {}", &line))?);
+    }
+
+    Ok(data)
+}
+
+fn is_already_downloaded(conn: &SqliteConnection, n: i64, idx: i64) -> Result<bool> {
+    use schema::fetched_files::dsl;
+
+    let res = dsl::fetched_files
+        .filter(dsl::n.eq_all(n))
+        .filter(dsl::idx.eq_all(idx))
+        .load::<models::FetchedFile>(conn)
+        .with_context(|| format!("failed to load fetched_file: n({}), idx({})", n, idx))?;
+
+    Ok(res.len() > 0)
 }
 
 fn db_clone(src: &str, num: usize) -> Result<Vec<String>> {
