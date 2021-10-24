@@ -1,7 +1,14 @@
+use std::fs;
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use env_logger;
 use log::{info, trace, warn};
 use thiserror::Error;
+use threadpool::ThreadPool;
+
+static DST_DIR: &str = "build";
+static WORKER_NUM: usize = 4;
 
 #[derive(Debug, Copy, Clone)]
 enum Language {
@@ -73,6 +80,9 @@ pub enum DownloadError {
 
     #[error("invalid query: {0}, {1}: {2}")]
     InvalidQuery(i64, i64, String),
+
+    #[error("failed to copy from {0} to {1}: {2}")]
+    CopyError(String, String, String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,11 +103,59 @@ struct Entry {
 pub fn run() -> Result<()> {
     env_logger::init();
 
-    info!("info message");
-    trace!("trace message");
-    warn!("warn message");
-    println!("println");
+    let lang = Language::English;
+
+    download_all(&lang).with_context(|| format!("failed to download all: {:?}", &lang))?;
+
     Ok(())
+}
+
+fn download_all(lang: &Language) -> Result<()> {
+    // 1-gram
+    let sqlite_one_gram = format!("{}/download.sqlite", DST_DIR);
+    download_one_gram(lang, &sqlite_one_gram)
+        .with_context(|| format!("failed to download one gram to {}", &sqlite_one_gram))?;
+
+    // 2-gram
+    let filenames = db_clone(&sqlite_one_gram, WORKER_NUM)
+        .with_context(|| format!("failed to clone {}", &sqlite_one_gram))?;
+
+    let pool = ThreadPool::new(WORKER_NUM);
+    for filename in filenames.into_iter() {
+        pool.execute(move || trace!("{}", filename));
+    }
+
+    pool.join();
+
+    Ok(())
+}
+
+fn download_one_gram(lang: &Language, filename: &str) -> Result<()> {
+    trace!("download one gram");
+    Ok(())
+}
+
+fn db_clone(src: &str, num: usize) -> Result<Vec<String>> {
+    let filenames: Vec<String> = (0..num)
+        .map(|i| format!("{}/download-{}.sqlite", DST_DIR, i))
+        .collect();
+
+    for filename in filenames.iter() {
+        if Path::new(filename).exists() {
+            trace!("{} already exists", filename);
+            continue;
+        }
+
+        if let Err(e) = fs::copy(src, filename) {
+            return Err(DownloadError::CopyError(
+                src.to_string(),
+                filename.to_string(),
+                e.to_string(),
+            ))?;
+        }
+    }
+
+    Ok(filenames)
 }
 
 fn parse_line(line: &str) -> Result<Data> {
