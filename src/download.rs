@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use crossbeam::channel;
-use diesel::{self, prelude::*, result, SqliteConnection};
+use diesel::{self, prelude::*, SqliteConnection};
 use env_logger;
 use flate2::bufread::GzDecoder;
 use log::{info, trace, warn};
@@ -23,6 +23,7 @@ static WORKER_NUM: usize = 4;
 static FREQ_WORD_NUM: usize = 10_000_000;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 enum Language {
     English,
     AmericanEnglish,
@@ -38,6 +39,7 @@ enum Language {
 }
 
 impl Language {
+    #[allow(dead_code)]
     fn parse(lang_name: &str) -> Language {
         match &*lang_name.to_lowercase() {
             "eng" => Language::English,
