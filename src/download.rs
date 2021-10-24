@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use crossbeam::channel;
 use env_logger;
 use log::{info, trace, warn};
 use thiserror::Error;
@@ -10,7 +11,7 @@ use threadpool::ThreadPool;
 static DST_DIR: &str = "build";
 static WORKER_NUM: usize = 4;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum Language {
     English,
     AmericanEnglish,
@@ -100,6 +101,13 @@ struct Entry {
     volume_count: i64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct Query {
+    lang: Language,
+    n: i64,
+    idx: i64,
+}
+
 pub fn run() -> Result<()> {
     env_logger::init();
 
@@ -121,8 +129,37 @@ fn download_all(lang: &Language) -> Result<()> {
         .with_context(|| format!("failed to clone {}", &sqlite_one_gram))?;
 
     let pool = ThreadPool::new(WORKER_NUM);
+    let (tx, rx): (channel::Sender<Query>, channel::Receiver<Query>) = channel::unbounded();
+    let n_sentinel = 10000;
     for filename in filenames.into_iter() {
-        pool.execute(move || trace!("{}", filename));
+        let rx = rx.clone();
+        pool.execute(move || {
+            trace!("filename: {}", filename);
+            for query in rx.iter() {
+                trace!("recv {:?}", query);
+                if query.n == n_sentinel {
+                    trace!("worker done");
+                    return;
+                }
+            }
+        });
+    }
+
+    for n in 2..=5 {
+        for idx in 0..total_file_num(lang, n) {
+            tx.send(Query {
+                lang: lang.clone().to_owned(),
+                n,
+                idx,
+            })?;
+        }
+    }
+    for _ in 0..WORKER_NUM {
+        tx.send(Query {
+            lang: lang.clone().to_owned(),
+            n: n_sentinel,
+            idx: 0,
+        })?;
     }
 
     pool.join();
