@@ -669,6 +669,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "log",
+ "num_cpus",
  "reqwest",
  "thiserror",
  "threadpool",
