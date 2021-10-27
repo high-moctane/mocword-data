@@ -1,20 +1,23 @@
 use std::cmp;
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
-use std::thread;
 
 use anyhow::{Context, Result};
-use clap::{App, Arg, SubCommand};
+use clap::{App, Arg};
 use crossbeam::channel;
-use diesel::{prelude::*, SqliteConnection};
+use diesel::{self, prelude::*, SqliteConnection};
 use env_logger;
 use flate2::bufread::GzDecoder;
-use log::{debug, info, warn};
+use log::{info, warn};
 use num_cpus;
 use reqwest;
 use thiserror::Error;
 use threadpool::ThreadPool;
+
+use crate::models;
+use crate::schema;
 
 const MAX_PARALLEL_DOWNLOAD: usize = 2;
 
@@ -96,8 +99,74 @@ impl Entry {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct IndexedEntry {
+    indexed_ngram: Vec<i64>,
+    score: i64,
+}
+
+impl IndexedEntry {
+    fn parse(line: &str, n: i64, wordidx: &HashMap<String, i64>) -> Result<Option<IndexedEntry>> {
+        let elems: Vec<&str> = line.split("\t").collect();
+        if elems.len() < 2 {
+            return Err(EntryError::InvalidLine(n, line.to_string()))?;
+        }
+
+        let ngram: Vec<String> = elems[0].split(" ").map(|s| s.to_string()).collect();
+        if ngram.len() != n as usize || ngram.iter().any(|word| !is_valid_word(word)) {
+            return Err(EntryError::InvalidNgram(n, line.to_string()))?;
+        }
+        let mut indexed_ngram = vec![];
+        for word in ngram.into_iter() {
+            match wordidx.get(&word) {
+                Some(idx) => indexed_ngram.push(idx.clone().to_owned()),
+                None => return Ok(None),
+            }
+        }
+
+        let mut score = 0;
+        for year_summary in elems[1..].iter() {
+            let values: Vec<&str> = year_summary.split(",").collect();
+            if values.len() != 3 {
+                return Err(EntryError::InvalidYearSummary(n, line.to_string()))?;
+            }
+
+            let match_count: i64 = values[1]
+                .parse()
+                .with_context(|| EntryError::InvalidYearSummary(n, line.to_string()))?;
+
+            score += match_count;
+        }
+
+        Ok(Some(IndexedEntry {
+            indexed_ngram,
+            score,
+        }))
+    }
+}
+
 fn is_valid_word(word: &str) -> bool {
-    unimplemented!();
+    let part_of_speech = vec![
+        "NOUN", ".", "VERB", "ADP", "DET", "ADJ", "PRON", "ADV", "NUM", "CONJ", "PRT", "X",
+    ];
+    let part_of_sppech_itself: Vec<_> = part_of_speech
+        .iter()
+        .map(|pos| format!("_{}_", pos))
+        .collect();
+    let part_of_speech_suffix: Vec<_> = part_of_speech
+        .iter()
+        .map(|pos| format!("_{}", pos))
+        .collect();
+    let punctuation: Vec<_> = "~`!@#$%^&*()_-+={[}]|\\:;\"\'<,>.?/}".chars().collect();
+
+    word.len() > 0
+        && !(word.chars().count() == 1
+            && punctuation
+                .iter()
+                .any(|c| c == &word.chars().nth(0).unwrap()))
+        && part_of_sppech_itself.iter().all(|pos| pos != word)
+        && part_of_speech_suffix.iter().all(|pos| !word.ends_with(pos))
+        && true
 }
 
 #[derive(Debug, Error)]
@@ -119,6 +188,12 @@ struct Query {
     idx: i64,
 }
 
+#[derive(Debug, Error)]
+enum ThreadError {
+    #[error("failed to channel send: {0}")]
+    ChannelError(String),
+}
+
 pub fn run() -> Result<()> {
     env_logger::init();
 
@@ -129,11 +204,12 @@ pub fn run() -> Result<()> {
         .with_context(|| format!("failed to connect db: {}", &filename))?;
 
     do_one_grams(&conn, &args).with_context(|| format!("failed to do one grams: {:?}", &args))?;
-    let wordidx = get_wordidx();
+    let wordidx = get_wordidx(&conn).context("failed to fetch wordidx")?;
 
-    do_two_to_five_grams();
+    do_two_to_five_grams(&conn, &args, &wordidx)
+        .with_context(|| format!("failed to do two to five grams: {:?}", &args))?;
 
-    finalize();
+    finalize(&conn).context("failed to finalize")?;
 
     Ok(())
 }
@@ -185,52 +261,17 @@ fn parse_args() -> Result<Args> {
 }
 
 fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
+    info!("start: do_one_grams");
+
     let n = 1;
-    let lang = args.lang.clone();
 
     // Download
-    let (dl_tx, dl_rx) = channel::bounded(args.dl_parallel());
-    let dl_pool = ThreadPool::with_name("1-gram download".to_string(), args.dl_parallel());
-    dl_pool.execute(move || {
-        for idx in 0..total_file_num(lang, 1) {
-            let gz_body = download(lang, n, idx)
-                .with_context(|| format!("failed to download {}-gram {}", n, idx));
-
-            dl_tx
-                .send((Query { lang, n, idx }, gz_body))
-                .with_context(|| format!("failed to download {}-gram {}", n, idx))
-                .unwrap();
-        }
-    });
+    let (dl_tx, dl_rx) = channel::bounded(0);
+    let dl_pool = parallel_download(args, n, dl_tx);
 
     // Parse
-    let (parse_tx, parse_rx) = channel::bounded(args.worker_parallel());
-    let parse_pool = ThreadPool::with_name("1-gram parse".to_string(), args.worker_parallel());
-    parse_pool.execute(move || {
-        for (query, gz_body) in dl_rx {
-            match gz_body {
-                Ok(gz_body) => {
-                    let entries = parse_gz_data_to_entries(&gz_body, n).with_context(|| {
-                        format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
-                    });
-                    parse_tx
-                        .send((query.clone(), entries))
-                        .with_context(|| {
-                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
-                        })
-                        .unwrap();
-                }
-                Err(e) => {
-                    parse_tx
-                        .send((query.clone(), Err(e)))
-                        .with_context(|| {
-                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
-                        })
-                        .unwrap();
-                }
-            }
-        }
-    });
+    let (parse_tx, parse_rx) = channel::bounded(0);
+    let parse_pool = parallel_parse_gz_data_to_entries(args, dl_rx, parse_tx, n);
 
     // Save
     for (query, entries) in parse_rx {
@@ -245,11 +286,41 @@ fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
     // Wait
     dl_pool.join();
     parse_pool.join();
+    if dl_pool.panic_count() != 0 {
+        Err(ThreadError::ChannelError("dl_pool panicked".to_string()))?;
+    }
+    if parse_pool.panic_count() != 0 {
+        Err(ThreadError::ChannelError("parse_pool panicked".to_string()))?;
+    }
 
+    info!("end  : do_one_grams");
     Ok(())
 }
 
+fn parallel_download(
+    args: &Args,
+    n: i64,
+    tx: channel::Sender<(Query, Result<Vec<u8>>)>,
+) -> ThreadPool {
+    let lang = args.lang.clone();
+    let pool = ThreadPool::with_name("1-gram download".to_string(), args.dl_parallel());
+    pool.execute(move || {
+        for idx in 0..total_file_num(lang, 1) {
+            let gz_body = download(lang, n, idx)
+                .with_context(|| format!("failed to download {}-gram {}", n, idx));
+
+            tx.send((Query { lang, n, idx }, gz_body))
+                .with_context(|| format!("failed to download {}-gram {}", n, idx))
+                .unwrap();
+        }
+    });
+    pool
+}
+
 fn download(lang: Language, n: i64, idx: i64) -> Result<Vec<u8>> {
+    let total = total_file_num(lang, n);
+    info!("start: download {}-gram {} of {}", n, idx, total);
+
     let url = remote_url(lang, n, idx);
     let mut res = vec![];
 
@@ -258,10 +329,48 @@ fn download(lang: Language, n: i64, idx: i64) -> Result<Vec<u8>> {
         .read_to_end(&mut res)
         .with_context(|| format!("failed to download {}", &url))?;
 
+    info!("end  : download {}-gram {} of {}", n, idx, total);
     Ok(res)
 }
 
+fn parallel_parse_gz_data_to_entries(
+    args: &Args,
+    dl_rx: channel::Receiver<(Query, Result<Vec<u8>>)>,
+    entries_tx: channel::Sender<(Query, Result<Vec<Entry>>)>,
+    n: i64,
+) -> ThreadPool {
+    let pool = ThreadPool::with_name("1-gram parse".to_string(), args.worker_parallel());
+    pool.execute(move || {
+        for (query, gz_body) in dl_rx {
+            match gz_body {
+                Ok(gz_body) => {
+                    let entries = parse_gz_data_to_entries(&gz_body, n).with_context(|| {
+                        format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                    });
+                    entries_tx
+                        .send((query.clone(), entries))
+                        .with_context(|| {
+                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                        })
+                        .unwrap();
+                }
+                Err(e) => {
+                    entries_tx
+                        .send((query.clone(), Err(e)))
+                        .with_context(|| {
+                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    });
+    pool
+}
+
 fn parse_gz_data_to_entries(gz_data: &[u8], n: i64) -> Result<Vec<Entry>> {
+    info!("start: parse {}-gram", n);
+
     let gz = GzDecoder::new(&gz_data[..]);
     let mut res = vec![];
 
@@ -277,18 +386,297 @@ fn parse_gz_data_to_entries(gz_data: &[u8], n: i64) -> Result<Vec<Entry>> {
         res.push(entry);
     }
 
+    info!("end  : parse {}-gram", n);
     Ok(res)
 }
 
 fn save_one_gram(conn: &SqliteConnection, entries: Vec<Entry>) -> Result<()> {
-    unimplemented!();
+    info!("start: save_one_gram");
+
+    let one_grams: Vec<_> = entries
+        .into_iter()
+        .map(|entry| models::NewOneGram {
+            word: entry.ngram[0].to_owned(),
+            score: entry.score,
+        })
+        .collect();
+
+    diesel::insert_into(schema::one_grams::table)
+        .values(&one_grams)
+        .execute(conn)
+        .context("failed to save one gram")?;
+
+    info!("end  : save_one_gram");
+    Ok(())
 }
 
-fn get_wordidx() {}
+fn get_wordidx(conn: &SqliteConnection) -> Result<HashMap<String, i64>> {
+    use schema::one_grams::dsl;
 
-fn do_two_to_five_grams() {}
+    info!("start: get wordidx");
 
-fn finalize() {}
+    let one_grams = dsl::one_grams
+        .load::<models::OneGram>(conn)
+        .context("failed to get wordidx")?;
+
+    info!("end  : get wordidx");
+
+    Ok(HashMap::from(
+        one_grams
+            .into_iter()
+            .map(|one_gram| (one_gram.word, one_gram.id))
+            .collect(),
+    ))
+}
+
+fn do_two_to_five_grams(
+    conn: &SqliteConnection,
+    args: &Args,
+    wordidx: &HashMap<String, i64>,
+) -> Result<()> {
+    // Download
+    for n in 2..=5 {
+        let (dl_tx, dl_rx) = channel::bounded(0);
+        let dl_pool = parallel_download(args, n, dl_tx);
+
+        // Parse
+        let (parse_tx, parse_rx) = channel::bounded(0);
+        let parse_pool =
+            parallel_parse_gz_data_to_indexed_entries(args, dl_rx, parse_tx, n, wordidx.to_owned());
+
+        // Save
+        for (query, entries) in parse_rx {
+            match entries {
+                Ok(entries) => save_ngram(conn, entries, n).with_context(|| {
+                    format!("failed to save {}-gram {} entries", query.n, query.idx)
+                })?,
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Wait
+        dl_pool.join();
+        parse_pool.join();
+        if dl_pool.panic_count() != 0 {
+            Err(ThreadError::ChannelError("dl_pool panicked".to_string()))?;
+        }
+        if parse_pool.panic_count() != 0 {
+            Err(ThreadError::ChannelError("parse_pool panicked".to_string()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn parallel_parse_gz_data_to_indexed_entries(
+    args: &Args,
+    dl_rx: channel::Receiver<(Query, Result<Vec<u8>>)>,
+    entries_tx: channel::Sender<(Query, Result<Vec<IndexedEntry>>)>,
+    n: i64,
+    wordidx: HashMap<String, i64>,
+) -> ThreadPool {
+    let pool = ThreadPool::with_name(format!("{}-gram parse", n), args.worker_parallel());
+    pool.execute(move || {
+        for (query, gz_body) in dl_rx {
+            match gz_body {
+                Ok(gz_body) => {
+                    let entries = parse_gz_data_to_indexed_entries(&gz_body, n, &wordidx)
+                        .with_context(|| {
+                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                        });
+                    entries_tx
+                        .send((query.clone(), entries))
+                        .with_context(|| {
+                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                        })
+                        .unwrap();
+                }
+                Err(e) => {
+                    entries_tx
+                        .send((query.clone(), Err(e)))
+                        .with_context(|| {
+                            format!("failed to parse {}-gram {} gz data", &query.n, &query.idx)
+                        })
+                        .unwrap();
+                }
+            }
+        }
+    });
+    pool
+}
+
+fn parse_gz_data_to_indexed_entries(
+    gz_data: &[u8],
+    n: i64,
+    wordidx: &HashMap<String, i64>,
+) -> Result<Vec<IndexedEntry>> {
+    info!("start: parse to indexed entries {}-gram", n);
+
+    let gz = GzDecoder::new(&gz_data[..]);
+    let mut res = vec![];
+
+    for line in BufReader::new(gz).lines() {
+        let line = line?;
+        let entry = match IndexedEntry::parse(&line, n, wordidx) {
+            Ok(ent) => ent,
+            Err(e) => {
+                warn!("{}", e);
+                continue;
+            }
+        };
+        res.push(entry);
+    }
+
+    info!("end  : parse to indexed entries {}-gram", n);
+
+    Ok(res
+        .into_iter()
+        .filter(|opt_entry| opt_entry.is_some())
+        .map(|opt_entry| opt_entry.unwrap())
+        .collect())
+}
+
+fn save_ngram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>, n: i64) -> Result<()> {
+    match n {
+        2 => save_two_gram(conn, indexed_entries),
+        3 => save_three_gram(conn, indexed_entries),
+        4 => save_four_gram(conn, indexed_entries),
+        5 => save_five_gram(conn, indexed_entries),
+        _ => panic!("invalid ngram: {}", n),
+    }
+}
+
+fn save_two_gram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>) -> Result<()> {
+    info!("start: save two gram");
+
+    let two_grams: Vec<_> = indexed_entries
+        .into_iter()
+        .map(|entry| models::NewTwoGram {
+            word1_id: entry.indexed_ngram[0].to_owned(),
+            word2_id: entry.indexed_ngram[1].to_owned(),
+            score: entry.score,
+        })
+        .collect();
+
+    diesel::insert_into(schema::two_grams::table)
+        .values(&two_grams)
+        .execute(conn)
+        .context("failed to save two gram")?;
+
+    info!("end  : save two gram");
+
+    Ok(())
+}
+
+fn save_three_gram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>) -> Result<()> {
+    info!("start: save three gram");
+
+    let three_grams: Vec<_> = indexed_entries
+        .into_iter()
+        .map(|entry| models::NewThreeGram {
+            word1_id: entry.indexed_ngram[0].to_owned(),
+            word2_id: entry.indexed_ngram[1].to_owned(),
+            word3_id: entry.indexed_ngram[2].to_owned(),
+            score: entry.score,
+        })
+        .collect();
+
+    diesel::insert_into(schema::three_grams::table)
+        .values(&three_grams)
+        .execute(conn)
+        .context("failed to save three gram")?;
+
+    info!("end  : save three gram");
+
+    Ok(())
+}
+
+fn save_four_gram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>) -> Result<()> {
+    info!("start: save four gram");
+
+    let four_grams: Vec<_> = indexed_entries
+        .into_iter()
+        .map(|entry| models::NewFourGram {
+            word1_id: entry.indexed_ngram[0].to_owned(),
+            word2_id: entry.indexed_ngram[1].to_owned(),
+            word3_id: entry.indexed_ngram[2].to_owned(),
+            word4_id: entry.indexed_ngram[3].to_owned(),
+            score: entry.score,
+        })
+        .collect();
+
+    diesel::insert_into(schema::four_grams::table)
+        .values(&four_grams)
+        .execute(conn)
+        .context("failed to save four gram")?;
+
+    info!("end  : save four gram");
+
+    Ok(())
+}
+
+fn save_five_gram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>) -> Result<()> {
+    info!("start: save five gram");
+
+    let five_grams: Vec<_> = indexed_entries
+        .into_iter()
+        .map(|entry| models::NewFiveGram {
+            word1_id: entry.indexed_ngram[0].to_owned(),
+            word2_id: entry.indexed_ngram[1].to_owned(),
+            word3_id: entry.indexed_ngram[2].to_owned(),
+            word4_id: entry.indexed_ngram[3].to_owned(),
+            word5_id: entry.indexed_ngram[4].to_owned(),
+            score: entry.score,
+        })
+        .collect();
+
+    diesel::insert_into(schema::five_grams::table)
+        .values(&five_grams)
+        .execute(conn)
+        .context("failed to save five gram")?;
+
+    info!("end  : save five gram");
+
+    Ok(())
+}
+
+fn finalize(conn: &SqliteConnection) -> Result<()> {
+    // Indexing
+    info!("start: indexing");
+    diesel::sql_query("create unique index idx_one_grams_word on one_grams(word)")
+        .execute(conn)
+        .context("idx_one_grams_word failed")?;
+
+    diesel::sql_query("create index idx_one_grams_score on one_grams(score)")
+        .execute(conn)
+        .context("idx_one_grams_score failed")?;
+
+    diesel::sql_query("create index idx_two_grams_score on two_grams(score)")
+        .execute(conn)
+        .context("idx_two_grams_score failed")?;
+
+    diesel::sql_query("create index idx_three_grams_score on three_grams(score)")
+        .execute(conn)
+        .context("idx_three_grams_score failed")?;
+
+    diesel::sql_query("create index idx_four_grams_score on four_grams(score)")
+        .execute(conn)
+        .context("idx_four_grams_score failed")?;
+
+    diesel::sql_query("create index idx_five_grams_score on five_grams(score)")
+        .execute(conn)
+        .context("idx_five_grams_score failed")?;
+    info!("end  : indexing");
+
+    // Vacuum
+    info!("start: vacuum");
+    diesel::sql_query("vacuum")
+        .execute(conn)
+        .context("vacuum failed")?;
+    info!("end  : vacuum");
+
+    Ok(())
+}
 
 fn total_file_num(lang: Language, n: i64) -> i64 {
     match lang {
@@ -364,5 +752,54 @@ mod tests {
             Ok(res) => panic!("{:?}", res),
             Err(_) => {}
         };
+    }
+
+    #[test]
+    fn test_is_valid_word() {
+        use super::*;
+
+        let valid = vec!["a", "b", "agroije", "r%@#@%!2342"];
+        let invalid = vec!["", "_PRON_", "!", "party_NOUN"];
+
+        for w in valid.iter() {
+            println!("{}", w);
+            assert!(is_valid_word(w));
+        }
+        for w in invalid.iter() {
+            println!("{}", w);
+            assert!(!is_valid_word(w));
+        }
+    }
+
+    #[test]
+    fn test_parse_indexed_entry() {
+        use super::*;
+
+        let mut hashmap = HashMap::new();
+        hashmap.insert("a".to_string(), 10);
+        hashmap.insert("bc".to_string(), 1);
+        hashmap.insert("def".to_string(), 22);
+
+        let indexed_entry = IndexedEntry::parse("a\t1996,243,12\t1999,5645,4234", 1, &hashmap);
+        assert_eq!(
+            indexed_entry.unwrap().unwrap(),
+            IndexedEntry {
+                indexed_ngram: vec![10],
+                score: 243 + 5645
+            }
+        );
+
+        let indexed_entry = IndexedEntry::parse("def a\t1996,243,12\t1999,5645,4234", 2, &hashmap);
+        assert_eq!(
+            indexed_entry.unwrap().unwrap(),
+            IndexedEntry {
+                indexed_ngram: vec![22, 10],
+                score: 243 + 5645
+            }
+        );
+
+        let indexed_entry =
+            IndexedEntry::parse("def powa\t1996,243,12\t1999,5645,4234", 2, &hashmap);
+        assert_eq!(indexed_entry.unwrap(), None,);
     }
 }
