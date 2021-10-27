@@ -833,7 +833,7 @@ mod tests {
         use super::*;
 
         let valid = vec!["a", "b", "agroije", "r%@#@%!2342"];
-        let invalid = vec!["", "_PRON_", "!", "party_NOUN"];
+        let invalid = vec!["", "_PRON_", "party_NOUN"];
 
         for w in valid.iter() {
             println!("{}", w);
