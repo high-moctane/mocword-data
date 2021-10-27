@@ -6,13 +6,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use backoff::{self, ExponentialBackoff};
 use clap::{App, Arg};
 use crossbeam::channel;
+use crossbeam::utils::Backoff;
 use diesel::{self, prelude::*, SqliteConnection};
 use env_logger;
 use flate2::bufread::GzDecoder;
-use log::{debug, info};
+use log::{debug, error, info};
 use num_cpus;
 use reqwest::blocking::Client;
 use thiserror::Error;
@@ -159,13 +159,8 @@ fn is_valid_word(word: &str) -> bool {
         .iter()
         .map(|pos| format!("_{}", pos))
         .collect();
-    let punctuation: Vec<_> = "~`!@#$%^&*()_-+={[}]|\\:;\"\'<,>.?/}".chars().collect();
 
     word.len() > 0
-        && !(word.chars().count() == 1
-            && punctuation
-                .iter()
-                .any(|c| c == &word.chars().nth(0).unwrap()))
         && part_of_sppech_itself.iter().all(|pos| pos != word)
         && part_of_speech_suffix.iter().all(|pos| !word.ends_with(pos))
         && true
@@ -284,9 +279,15 @@ fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
         info!("start: save {}-gram {} of {}", query.n, query.idx, total);
 
         match entries {
-            Ok(entries) => save_one_gram(conn, entries).with_context(|| {
-                format!("failed to save {}-gram {} entries", query.n, query.idx)
-            })?,
+            Ok(entries) => {
+                conn.transaction::<_, Box<dyn std::error::Error>, _>(|| {
+                    save_one_gram(conn, entries)?;
+                    save_fetched_file(conn, n, query.idx)?;
+                    Ok(())
+                })
+                .unwrap();
+            }
+
             Err(e) => return Err(e),
         }
 
@@ -334,24 +335,35 @@ fn parallel_download(
 }
 
 fn download(lang: Language, n: i64, idx: i64) -> Result<Vec<u8>> {
-    let op = || {
-        let url = remote_url(lang, n, idx);
-        let mut res = vec![];
+    let backoff = Backoff::new();
 
-        Client::new()
+    loop {
+        let url = remote_url(lang, n, idx);
+        let mut ret = vec![];
+
+        let resp = Client::new()
             .get(&url)
             .send()
-            .with_context(|| format!("failed to download {}", &url))?
-            .read_to_end(&mut res)
-            .with_context(|| format!("failed to download {}", &url))?;
+            .with_context(|| format!("failed to download {}", &url));
 
-        Ok(res)
-    };
+        if let Err(e) = resp {
+            error!("failed to get {}: {}", url, e);
+            backoff.spin();
+            continue;
+        }
 
-    let expbackoff = ExponentialBackoff::default();
-    match backoff::retry(expbackoff, op) {
-        Ok(res) => Ok(res),
-        Err(e) => panic!("download failed: {}", e),
+        let result = resp
+            .unwrap()
+            .read_to_end(&mut ret)
+            .with_context(|| format!("failed to download {}", &url));
+
+        if let Err(e) = result {
+            error!("failed to read {}: {}", url, e);
+            backoff.spin();
+            continue;
+        }
+
+        return Ok(ret);
     }
 }
 
@@ -362,9 +374,12 @@ fn parallel_parse_gz_data_to_entries(
     n: i64,
 ) -> ThreadPool {
     let pool = ThreadPool::with_name("1-gram parse".to_string(), args.worker_parallel());
-    for (query, gz_body) in dl_rx {
+    for _ in 0..total_file_num(args.lang, n) {
+        let dl_rx = dl_rx.clone();
         let entries_tx = entries_tx.clone();
         pool.execute(move || {
+            let (query, gz_body) = dl_rx.recv().unwrap();
+
             let total = total_file_num(query.lang, query.n);
             info!("start: parse {}-gram {} of {}", query.n, query.idx, total);
 
@@ -391,7 +406,7 @@ fn parallel_parse_gz_data_to_entries(
             }
 
             info!("end  : parse {}-gram {} of {}", query.n, query.idx, total);
-        })
+        });
     }
     pool
 }
@@ -472,9 +487,14 @@ fn do_two_to_five_grams(
             info!("start: save {}-gram {} of {}", query.n, query.idx, total);
 
             match entries {
-                Ok(entries) => save_ngram(conn, entries, n).with_context(|| {
-                    format!("failed to save {}-gram {} entries", query.n, query.idx)
-                })?,
+                Ok(entries) => {
+                    conn.transaction::<_, Box<dyn std::error::Error>, _>(|| {
+                        save_ngram(conn, entries, n)?;
+                        save_fetched_file(conn, n, query.idx)?;
+                        Ok(())
+                    })
+                }
+                .unwrap(),
                 Err(e) => return Err(e),
             }
 
@@ -504,10 +524,15 @@ fn parallel_parse_gz_data_to_indexed_entries(
 ) -> ThreadPool {
     let pool = ThreadPool::with_name(format!("{}-gram parse", n), args.worker_parallel());
     let wordidx = Arc::new(wordidx);
-    for (query, gz_body) in dl_rx {
+
+    for _ in 0..total_file_num(args.lang, n) {
         let entries_tx = entries_tx.clone();
         let wordidx = Arc::clone(&wordidx);
+        let dl_rx = dl_rx.clone();
+
         pool.execute(move || {
+            let (query, gz_body) = dl_rx.recv().unwrap();
+
             let total = total_file_num(query.lang, query.n);
             info!(
                 "start: parse to indexed entries {}-gram {} of {}",
@@ -541,7 +566,7 @@ fn parallel_parse_gz_data_to_indexed_entries(
                 "end  : parse to indexed entries {}-gram {} of {}",
                 query.n, query.idx, total
             );
-        })
+        });
     }
     pool
 }
@@ -678,6 +703,14 @@ fn save_five_gram(conn: &SqliteConnection, indexed_entries: Vec<IndexedEntry>) -
 
     info!("end  : save five gram");
 
+    Ok(())
+}
+
+fn save_fetched_file(conn: &SqliteConnection, n: i64, idx: i64) -> Result<()> {
+    diesel::insert_into(schema::fetched_files::table)
+        .values(models::NewFetchedFile { n, idx })
+        .execute(conn)
+        .with_context(|| format!("failed to save fetched_files: {}-gram {}", n, idx))?;
     Ok(())
 }
 
