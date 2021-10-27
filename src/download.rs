@@ -3,16 +3,18 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use backoff::{self, ExponentialBackoff};
 use clap::{App, Arg};
 use crossbeam::channel;
 use diesel::{self, prelude::*, SqliteConnection};
 use env_logger;
 use flate2::bufread::GzDecoder;
-use log::{info, warn};
+use log::{debug, info};
 use num_cpus;
-use reqwest;
+use reqwest::blocking::Client;
 use thiserror::Error;
 use threadpool::ThreadPool;
 
@@ -174,7 +176,7 @@ enum EntryError {
     #[error("invalid {0}-gram line: {1}")]
     InvalidLine(i64, String),
 
-    #[error("invalid {0}-gram len: {1}")]
+    #[error("invalid {0}-gram: {1}")]
     InvalidNgram(i64, String),
 
     #[error("invalid {0}-gram year summary: {1}")]
@@ -247,7 +249,10 @@ fn parse_args() -> Result<Args> {
         .get_matches();
 
     let lang = matches.value_of("language").unwrap_or_else(|| "eng").into();
-    let dir = matches.value_of("dir").unwrap_or_else(|| ".").to_string();
+    let dir = matches
+        .value_of("dir")
+        .unwrap_or_else(|| "build")
+        .to_string();
     let parallel_str = matches.value_of("parallel").unwrap_or_else(|| "1");
     let parallel = parallel_str
         .parse()
@@ -275,12 +280,17 @@ fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
 
     // Save
     for (query, entries) in parse_rx {
+        let total = total_file_num(query.lang, query.n);
+        info!("start: save {}-gram {} of {}", query.n, query.idx, total);
+
         match entries {
             Ok(entries) => save_one_gram(conn, entries).with_context(|| {
                 format!("failed to save {}-gram {} entries", query.n, query.idx)
             })?,
             Err(e) => return Err(e),
         }
+
+        info!("end  : save {}-gram {} of {}", query.n, query.idx, total);
     }
 
     // Wait
@@ -304,33 +314,45 @@ fn parallel_download(
 ) -> ThreadPool {
     let lang = args.lang.clone();
     let pool = ThreadPool::with_name("1-gram download".to_string(), args.dl_parallel());
-    pool.execute(move || {
-        for idx in 0..total_file_num(lang, 1) {
+    for idx in 0..total_file_num(lang, 1) {
+        let tx = tx.clone();
+        pool.execute(move || {
+            let total = total_file_num(lang, n);
+            info!("start: download {}-gram {} of {}", n, idx, total);
+
             let gz_body = download(lang, n, idx)
                 .with_context(|| format!("failed to download {}-gram {}", n, idx));
 
             tx.send((Query { lang, n, idx }, gz_body))
                 .with_context(|| format!("failed to download {}-gram {}", n, idx))
                 .unwrap();
-        }
-    });
+
+            info!("end  : download {}-gram {} of {}", n, idx, total);
+        })
+    }
     pool
 }
 
 fn download(lang: Language, n: i64, idx: i64) -> Result<Vec<u8>> {
-    let total = total_file_num(lang, n);
-    info!("start: download {}-gram {} of {}", n, idx, total);
+    let op = || {
+        let url = remote_url(lang, n, idx);
+        let mut res = vec![];
 
-    let url = remote_url(lang, n, idx);
-    let mut res = vec![];
+        Client::new()
+            .get(&url)
+            .send()
+            .with_context(|| format!("failed to download {}", &url))?
+            .read_to_end(&mut res)
+            .with_context(|| format!("failed to download {}", &url))?;
 
-    reqwest::blocking::get(&url)
-        .with_context(|| format!("failed to download {}", &url))?
-        .read_to_end(&mut res)
-        .with_context(|| format!("failed to download {}", &url))?;
+        Ok(res)
+    };
 
-    info!("end  : download {}-gram {} of {}", n, idx, total);
-    Ok(res)
+    let expbackoff = ExponentialBackoff::default();
+    match backoff::retry(expbackoff, op) {
+        Ok(res) => Ok(res),
+        Err(e) => panic!("download failed: {}", e),
+    }
 }
 
 fn parallel_parse_gz_data_to_entries(
@@ -340,8 +362,12 @@ fn parallel_parse_gz_data_to_entries(
     n: i64,
 ) -> ThreadPool {
     let pool = ThreadPool::with_name("1-gram parse".to_string(), args.worker_parallel());
-    pool.execute(move || {
-        for (query, gz_body) in dl_rx {
+    for (query, gz_body) in dl_rx {
+        let entries_tx = entries_tx.clone();
+        pool.execute(move || {
+            let total = total_file_num(query.lang, query.n);
+            info!("start: parse {}-gram {} of {}", query.n, query.idx, total);
+
             match gz_body {
                 Ok(gz_body) => {
                     let entries = parse_gz_data_to_entries(&gz_body, n).with_context(|| {
@@ -363,14 +389,14 @@ fn parallel_parse_gz_data_to_entries(
                         .unwrap();
                 }
             }
-        }
-    });
+
+            info!("end  : parse {}-gram {} of {}", query.n, query.idx, total);
+        })
+    }
     pool
 }
 
 fn parse_gz_data_to_entries(gz_data: &[u8], n: i64) -> Result<Vec<Entry>> {
-    info!("start: parse {}-gram", n);
-
     let gz = GzDecoder::new(&gz_data[..]);
     let mut res = vec![];
 
@@ -379,20 +405,17 @@ fn parse_gz_data_to_entries(gz_data: &[u8], n: i64) -> Result<Vec<Entry>> {
         let entry = match Entry::parse(&line, n) {
             Ok(ent) => ent,
             Err(e) => {
-                warn!("{}", e);
+                debug!("{}", e);
                 continue;
             }
         };
         res.push(entry);
     }
 
-    info!("end  : parse {}-gram", n);
     Ok(res)
 }
 
 fn save_one_gram(conn: &SqliteConnection, entries: Vec<Entry>) -> Result<()> {
-    info!("start: save_one_gram");
-
     let one_grams: Vec<_> = entries
         .into_iter()
         .map(|entry| models::NewOneGram {
@@ -406,7 +429,6 @@ fn save_one_gram(conn: &SqliteConnection, entries: Vec<Entry>) -> Result<()> {
         .execute(conn)
         .context("failed to save one gram")?;
 
-    info!("end  : save_one_gram");
     Ok(())
 }
 
@@ -446,12 +468,17 @@ fn do_two_to_five_grams(
 
         // Save
         for (query, entries) in parse_rx {
+            let total = total_file_num(query.lang, query.n);
+            info!("start: save {}-gram {} of {}", query.n, query.idx, total);
+
             match entries {
                 Ok(entries) => save_ngram(conn, entries, n).with_context(|| {
                     format!("failed to save {}-gram {} entries", query.n, query.idx)
                 })?,
                 Err(e) => return Err(e),
             }
+
+            info!("end  : save {}-gram {} of {}", query.n, query.idx, total);
         }
 
         // Wait
@@ -476,8 +503,17 @@ fn parallel_parse_gz_data_to_indexed_entries(
     wordidx: HashMap<String, i64>,
 ) -> ThreadPool {
     let pool = ThreadPool::with_name(format!("{}-gram parse", n), args.worker_parallel());
-    pool.execute(move || {
-        for (query, gz_body) in dl_rx {
+    let wordidx = Arc::new(wordidx);
+    for (query, gz_body) in dl_rx {
+        let entries_tx = entries_tx.clone();
+        let wordidx = Arc::clone(&wordidx);
+        pool.execute(move || {
+            let total = total_file_num(query.lang, query.n);
+            info!(
+                "start: parse to indexed entries {}-gram {} of {}",
+                query.n, query.idx, total
+            );
+
             match gz_body {
                 Ok(gz_body) => {
                     let entries = parse_gz_data_to_indexed_entries(&gz_body, n, &wordidx)
@@ -500,8 +536,13 @@ fn parallel_parse_gz_data_to_indexed_entries(
                         .unwrap();
                 }
             }
-        }
-    });
+
+            info!(
+                "end  : parse to indexed entries {}-gram {} of {}",
+                query.n, query.idx, total
+            );
+        })
+    }
     pool
 }
 
@@ -520,7 +561,7 @@ fn parse_gz_data_to_indexed_entries(
         let entry = match IndexedEntry::parse(&line, n, wordidx) {
             Ok(ent) => ent,
             Err(e) => {
-                warn!("{}", e);
+                debug!("{}", e);
                 continue;
             }
         };
