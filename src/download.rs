@@ -267,7 +267,7 @@ fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
 
     // Download
     let (dl_tx, dl_rx) = channel::bounded(0);
-    let dl_pool = parallel_download(args, n, dl_tx);
+    let dl_pool = parallel_download(conn, args, n, dl_tx);
 
     // Parse
     let (parse_tx, parse_rx) = channel::bounded(0);
@@ -309,6 +309,7 @@ fn do_one_grams(conn: &SqliteConnection, args: &Args) -> Result<()> {
 }
 
 fn parallel_download(
+    conn: &SqliteConnection,
     args: &Args,
     n: i64,
     tx: channel::Sender<(Query, Result<Vec<u8>>)>,
@@ -316,6 +317,10 @@ fn parallel_download(
     let lang = args.lang.clone();
     let pool = ThreadPool::with_name("1-gram download".to_string(), args.dl_parallel());
     for idx in 0..total_file_num(lang, 1) {
+        if is_fetched_file(conn, n, idx).unwrap() {
+            continue;
+        }
+
         let tx = tx.clone();
         pool.execute(move || {
             let total = total_file_num(lang, n);
@@ -474,7 +479,7 @@ fn do_two_to_five_grams(
     // Download
     for n in 2..=5 {
         let (dl_tx, dl_rx) = channel::bounded(0);
-        let dl_pool = parallel_download(args, n, dl_tx);
+        let dl_pool = parallel_download(conn, args, n, dl_tx);
 
         // Parse
         let (parse_tx, parse_rx) = channel::bounded(0);
@@ -714,34 +719,19 @@ fn save_fetched_file(conn: &SqliteConnection, n: i64, idx: i64) -> Result<()> {
     Ok(())
 }
 
+fn is_fetched_file(conn: &SqliteConnection, n: i64, idx: i64) -> Result<bool> {
+    use schema::fetched_files::dsl;
+
+    let res = dsl::fetched_files
+        .filter(dsl::n.eq_all(n))
+        .filter(dsl::idx.eq_all(idx))
+        .load::<models::FetchedFile>(conn)
+        .with_context(|| format!("failed to get fetched file: {}-ngram {}", n, idx))?;
+
+    Ok(res.len() > 0)
+}
+
 fn finalize(conn: &SqliteConnection) -> Result<()> {
-    // Indexing
-    info!("start: indexing");
-    diesel::sql_query("create unique index idx_one_grams_word on one_grams(word)")
-        .execute(conn)
-        .context("idx_one_grams_word failed")?;
-
-    diesel::sql_query("create index idx_one_grams_score on one_grams(score)")
-        .execute(conn)
-        .context("idx_one_grams_score failed")?;
-
-    diesel::sql_query("create index idx_two_grams_score on two_grams(score)")
-        .execute(conn)
-        .context("idx_two_grams_score failed")?;
-
-    diesel::sql_query("create index idx_three_grams_score on three_grams(score)")
-        .execute(conn)
-        .context("idx_three_grams_score failed")?;
-
-    diesel::sql_query("create index idx_four_grams_score on four_grams(score)")
-        .execute(conn)
-        .context("idx_four_grams_score failed")?;
-
-    diesel::sql_query("create index idx_five_grams_score on five_grams(score)")
-        .execute(conn)
-        .context("idx_five_grams_score failed")?;
-    info!("end  : indexing");
-
     // Vacuum
     info!("start: vacuum");
     diesel::sql_query("vacuum")
