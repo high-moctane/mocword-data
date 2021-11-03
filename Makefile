@@ -17,9 +17,16 @@ tool:
 
 .PHONY: fmt
 fmt:
+	go mod tidy
 	find . -name \*.go -exec goimports -w {} \;
 
 
 .PHONY: test
 test:
 	go test ./...
+
+
+.PHONY: lint
+lint:
+	go vet ./...
+	staticcheck ./...

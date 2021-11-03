@@ -1,7 +1,14 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"log"
+
+	"github.com/high-moctane/mocword/download"
+)
 
 func main() {
-	fmt.Println("Hello, mocword download!")
+	if err := download.Run(context.Background()); err != nil {
+		log.Fatal(err)
+	}
 }
