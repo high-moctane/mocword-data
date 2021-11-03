@@ -19,8 +19,14 @@ jobs:
       with:
         go-version: 1.17
 
+    - name: Tool
+      run: make tool
+
     - name: Build
       run: make build
 
     - name: Run lint
       run: make lint
+
+    - name: Run test
+      run: make test
