@@ -4,7 +4,6 @@ go 1.17
 
 require (
 	github.com/cenkalti/backoff/v4 v4.1.1
-	github.com/dghubble/trie v0.0.0-20211002190126-ca25329b35c6
 	gorm.io/driver/sqlite v1.2.3
 	gorm.io/gorm v1.22.2
 )

@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	backoff "github.com/cenkalti/backoff/v4"
-	"github.com/dghubble/trie"
 	"github.com/high-moctane/mocword/entities"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -39,24 +38,25 @@ var fileLangNIndex = map[string]map[int]int{
 	},
 }
 
-type runeInt64Trie struct {
-	t *trie.RuneTrie
+type stringInt64 struct {
+	m map[string]int64
 }
 
-func newRuneInt64Trie() *runeInt64Trie {
-	return &runeInt64Trie{trie.NewRuneTrie()}
+func newRuneInt64Trie() *stringInt64 {
+	return &stringInt64{make(map[string]int64)}
 }
 
-func (t *runeInt64Trie) Get(key string) (int64, bool) {
-	res := t.t.Get(key)
-	if res == nil {
-		return 0, false
+func (m *stringInt64) Get(key string) (int64, bool) {
+	res, ok := m.m[key]
+	return res, ok
+}
+
+func (m *stringInt64) Put(key string, value int64) bool {
+	if v, ok := m.m[key]; ok {
+		panic(fmt.Sprintf("duplicated key %q at %d", key, v))
 	}
-	return res.(int64), true
-}
-
-func (t *runeInt64Trie) Put(key string, value int64) bool {
-	return t.t.Put(key, value)
+	m.m[key] = value
+	return true
 }
 
 func Run(ctx context.Context) error {
@@ -307,7 +307,7 @@ type IndexEntry struct {
 	score      int64
 }
 
-func newIndexEntry(line string, n int, wordIdx *runeInt64Trie) (IndexEntry, error) {
+func newIndexEntry(line string, n int, wordIdx *stringInt64) (IndexEntry, error) {
 	entry, err := newEntry(line, n)
 	if err != nil {
 		return IndexEntry{}, fmt.Errorf("failed to create new index entry: %w", err)
@@ -325,7 +325,7 @@ func newIndexEntry(line string, n int, wordIdx *runeInt64Trie) (IndexEntry, erro
 	return IndexEntry{indexNgram, entry.score}, nil
 }
 
-func newIndexEntries(ctx context.Context, r io.Reader, n int, wordIdx *runeInt64Trie) ([]IndexEntry, error) {
+func newIndexEntries(ctx context.Context, r io.Reader, n int, wordIdx *stringInt64) ([]IndexEntry, error) {
 	var res []IndexEntry
 	sc := bufio.NewScanner(r)
 
@@ -351,7 +351,7 @@ func newIndexEntries(ctx context.Context, r io.Reader, n int, wordIdx *runeInt64
 	return res, nil
 }
 
-func newWordIdx(ctx context.Context, db *gorm.DB) (wordIdx *runeInt64Trie, err error) {
+func newWordIdx(ctx context.Context, db *gorm.DB) (wordIdx *stringInt64, err error) {
 	log.Println("start: wordidx")
 	defer log.Println("end  : wordidx")
 
@@ -371,7 +371,7 @@ func newWordIdx(ctx context.Context, db *gorm.DB) (wordIdx *runeInt64Trie, err e
 	return
 }
 
-func doNGrams(ctx context.Context, db *gorm.DB, wordIdx *runeInt64Trie) error {
+func doNGrams(ctx context.Context, db *gorm.DB, wordIdx *stringInt64) error {
 	var wg sync.WaitGroup
 
 	for n := 2; n < 5; n++ {
@@ -397,7 +397,7 @@ func doNGrams(ctx context.Context, db *gorm.DB, wordIdx *runeInt64Trie) error {
 	return nil
 }
 
-func doNGram(ctx context.Context, db *gorm.DB, wordIdx *runeInt64Trie, n, idx int) error {
+func doNGram(ctx context.Context, db *gorm.DB, wordIdx *stringInt64, n, idx int) error {
 	total := fileLangNIndex[*language][n]
 
 	ok, err := isFetched(ctx, db, n, idx)
