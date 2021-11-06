@@ -18,5 +18,10 @@ RUN cargo build --release
 
 FROM debian:bullseye-slim AS runtime
 WORKDIR app
+RUN set -xe \
+    && apt-get update \
+    && apt-get install -y default-mysql-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && true
 COPY --from=builder /app/target/release/mocword-data /usr/local/bin
 ENTRYPOINT ["/usr/local/bin/mocword-data"]

@@ -1,3 +1,5 @@
+use mocword_data::download;
+
 fn main() {
-    println!("Hello, world!");
+    download::run();
 }
