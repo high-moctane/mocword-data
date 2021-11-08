@@ -1,2 +1,5 @@
-/cmd/mocword_download/mocword_download
 *.sqlite
+/mariadbdata/**
+/target
+
+!/mariadbdata/.gitkeep
