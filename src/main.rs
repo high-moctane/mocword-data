@@ -1,5 +1,5 @@
 use mocword_data::download;
 
 fn main() {
-    download::run();
+    download::run().unwrap();
 }
