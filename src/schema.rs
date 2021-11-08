@@ -10,6 +10,7 @@ table! {
         id -> Bigint,
         prefix_id -> Bigint,
         suffix_id -> Bigint,
+        score -> Bigint,
     }
 }
 
@@ -26,6 +27,7 @@ table! {
         id -> Bigint,
         prefix_id -> Bigint,
         suffix_id -> Bigint,
+        score -> Bigint,
     }
 }
 
@@ -41,11 +43,13 @@ table! {
     one_grams (id) {
         id -> Bigint,
         word -> Text,
+        score -> Bigint,
     }
 }
 
 table! {
-    one_gram_scores (word) {
+    one_gram_scores (id) {
+        id -> Bigint,
         word -> Text,
         score -> Bigint,
     }
@@ -56,6 +60,7 @@ table! {
         id -> Bigint,
         prefix_id -> Bigint,
         suffix_id -> Bigint,
+        score -> Bigint,
     }
 }
 
@@ -72,6 +77,7 @@ table! {
         id -> Bigint,
         prefix_id -> Bigint,
         suffix_id -> Bigint,
+        score -> Bigint,
     }
 }
 
