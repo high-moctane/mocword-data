@@ -1,11 +1,17 @@
 use std::io;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use backoff::{retry, Error, ExponentialBackoff};
+use crossbeam::channel;
 use diesel::Connection;
-use diesel::MysqlConnection;
+use diesel::{r2d2::Pool, MysqlConnection};
+use exponential_backoff::Backoff;
 use log::{debug, error, info, warn};
 use simplelog::{Config, LevelFilter, SimpleLogger};
+use thiserror::Error;
+use threadpool::ThreadPool;
 
 use crate::embedded_migrations;
 
@@ -27,10 +33,12 @@ fn initialize() -> Result<()> {
     Ok(())
 }
 
-struct Args {}
+struct Args {
+    lang: Language,
+    parallel: usize,
+}
 
 fn get_args() -> Result<Args> {
-    return Ok(Args {});
     unimplemented!();
 }
 
@@ -38,16 +46,26 @@ fn mariadb_dsn() -> String {
     format!("mysql://moctane:pw@mariadb:3306/mocword")
 }
 
-fn new_conn(args: &Args) -> Result<MysqlConnection> {
-    let op = || match MysqlConnection::establish(&mariadb_dsn()) {
-        Ok(conn) => Ok(conn),
-        Err(e) => {
-            error!("failed to establish: {}", e);
-            Err(Error::Transient)
-        }
-    };
+#[derive(Debug, Error)]
+enum NetworkError {
+    #[error("failed to establish connection")]
+    DBConnectionError(),
+}
 
-    Ok(retry(&mut ExponentialBackoff::default(), op)?)
+fn new_conn(args: &Args) -> Result<MysqlConnection> {
+    let backoff = Backoff::new(8, Duration::from_millis(100), Duration::from_secs(10));
+
+    for duration in &backoff {
+        match MysqlConnection::establish(&mariadb_dsn()) {
+            Ok(conn) => return Ok(conn),
+            Err(e) => {
+                error!("failed to establish: {}", e);
+                thread::sleep(duration);
+            }
+        };
+    }
+
+    Err(NetworkError::DBConnectionError())?
 }
 
 fn migrate(conn: &MysqlConnection) -> Result<()> {
@@ -57,7 +75,21 @@ fn migrate(conn: &MysqlConnection) -> Result<()> {
     Ok(())
 }
 
-fn do_one_grams() -> Result<()> {
+fn do_one_grams(args: &Args, conn: &MysqlConnection) -> Result<()> {
+    let n = 1;
+
+    let conn = Arc::new(*conn);
+
+    let pool = ThreadPool::new(args.parallel);
+    for query in gen_queries(args.lang, n).into_iter() {
+        let conn = Arc::clone(&conn);
+        pool.execute(move || do_one_gram(conn, query));
+    }
+
+    Ok(())
+}
+
+fn do_one_gram(conn: Arc<MysqlConnection>, query: Query) {
     unimplemented!();
 }
 
@@ -74,5 +106,15 @@ fn do_four_grams() -> Result<()> {
 }
 
 fn do_five_grams() -> Result<()> {
+    unimplemented!();
+}
+
+enum Language {
+    English,
+}
+
+struct Query {}
+
+fn gen_queries(lang: Language, n: i64) -> Vec<Query> {
     unimplemented!();
 }

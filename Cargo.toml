@@ -7,11 +7,12 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
-backoff = "0.3"
 clap = "2.33"
 crossbeam = "0.8"
-diesel = { version = "1.4", features = ["mysql"]  }
+diesel = { version = "1.4", features = ["mysql", "r2d2"]  }
 diesel_migrations = "1.4"
 log = "0.4"
 simplelog = "0.10"
 thiserror = "1.0"
+exponential-backoff = "1.0"
+threadpool = "1.8"
