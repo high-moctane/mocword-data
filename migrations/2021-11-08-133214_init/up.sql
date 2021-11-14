@@ -1,10 +1,10 @@
 create table if not exists one_gram_scores (
     id    bigint not null auto_increment primary key,
     word  text   not null,
-    score bigint not null,
+    score bigint not null
 
     unique index idx_one_grams_scores_word (word)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists two_gram_scores (
     prefix_id bigint not null,
@@ -12,7 +12,7 @@ create table if not exists two_gram_scores (
     score     bigint not null,
 
     primary key (prefix_id, suffix_id)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists three_gram_scores (
     prefix_id bigint not null,
@@ -20,7 +20,7 @@ create table if not exists three_gram_scores (
     score     bigint not null,
 
     primary key (prefix_id, suffix_id)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists four_gram_scores (
     prefix_id bigint not null,
@@ -28,7 +28,7 @@ create table if not exists four_gram_scores (
     score     bigint not null,
 
     primary key (prefix_id, suffix_id)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists five_gram_scores (
     prefix_id bigint not null,
@@ -36,7 +36,7 @@ create table if not exists five_gram_scores (
     score     bigint not null,
 
     primary key (prefix_id, suffix_id)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists one_grams (
     id    bigint not null auto_increment primary key,
@@ -44,7 +44,7 @@ create table if not exists one_grams (
     score bigint not null,
 
     index idx_one_grams_score (score)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists two_grams (
     id        bigint not null auto_increment primary key,
@@ -63,7 +63,7 @@ create table if not exists two_grams (
 
     unique index idx_two_grams (prefix_id, suffix_id),
     index idx_two_grams_score (score)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists three_grams (
     id        bigint not null auto_increment primary key,
@@ -82,7 +82,7 @@ create table if not exists three_grams (
 
     unique index idx_three_grams (prefix_id, suffix_id),
     index idx_three_grams_score (score)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists four_grams (
     id        bigint not null auto_increment primary key,
@@ -101,7 +101,7 @@ create table if not exists four_grams (
 
     unique index idx_four_grams (prefix_id, suffix_id),
     index idx_four_grams_score (score)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists five_grams (
     id        bigint not null auto_increment primary key,
@@ -120,11 +120,11 @@ create table if not exists five_grams (
 
     unique index idx_five_grams (prefix_id, suffix_id),
     index idx_five_grams_score (score)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists fetched_files (
     n   bigint not null,
     idx bigint not null,
 
     primary key (n, idx)
-) engine innodb charset 'utf8mb4';
+) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
