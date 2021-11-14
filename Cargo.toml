@@ -12,8 +12,12 @@ crossbeam = "0.8"
 diesel = { version = "1.4", features = ["mysql", "r2d2"]  }
 diesel_migrations = "1.4"
 exponential-backoff = "1.0"
+flate2 = "1.0"
+indoc = "1.0"
 log = "0.4"
+num_cpus = "1.13"
 reqwest = { version = "0.11", features = ["blocking"] }
 simplelog = "0.10"
+tempfile = "3.2"
 thiserror = "1.0"
 threadpool = "1.8"
