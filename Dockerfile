@@ -15,9 +15,9 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release
 
-
 FROM debian:bullseye-slim AS runtime
 WORKDIR app
+ENV RUST_BACKTRACE=1
 RUN set -xe \
     && apt-get update \
     && apt-get install -y default-mysql-client \
