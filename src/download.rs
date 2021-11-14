@@ -176,30 +176,30 @@ fn do_one_gram(pool: Pool<ConnectionManager<MysqlConnection>>, query: Query) -> 
     let conn = pool.get()?;
     conn.transaction::<_, diesel::result::Error, _>(|| {
         let mut file = tempfile::tempfile().map_err(|e| {
-            error!("{}", e);
+            error!("{:?}", e);
             diesel::result::Error::RollbackTransaction
         })?;
         download(&query, &mut file)
             .with_context(|| format!("failed to download: {:?}", &query))
             .map_err(|e| {
-                error!("{}", e);
+                error!("{:?}", e);
                 diesel::result::Error::RollbackTransaction
             })?;
         file.seek(SeekFrom::Start(0)).map_err(|e| {
-            error!("{}", e);
+            error!("{:?}", e);
             diesel::result::Error::RollbackTransaction
         })?;
 
         read_and_save(&conn, &query, &mut file)
             .with_context(|| format!("failed to read and save: {:?}", &query))
             .map_err(|e| {
-                error!("{}", e);
+                error!("{:?}", e);
                 diesel::result::Error::RollbackTransaction
             })?;
         mark_fetched_file(&conn, &query)
             .with_context(|| format!("failed to mark fetched file: {:?}", &query))
             .map_err(|e| {
-                error!("{}", e);
+                error!("{:?}", e);
                 diesel::result::Error::RollbackTransaction
             })?;
         Ok(())
