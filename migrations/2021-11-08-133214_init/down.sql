@@ -11,3 +11,4 @@ drop table four_gram_scores;
 drop table three_gram_scores;
 drop table two_gram_scores;
 drop table one_gram_scores;
+drop sequence seq_one_gram_scores;
