@@ -1,7 +1,5 @@
-create sequence seq_one_gram_scores;
-
 create table if not exists one_gram_scores (
-    id    bigint not null default (next value for seq_one_gram_scores) primary key,
+    id    bigint not null auto_increment primary key,
     word  text   not null,
     score bigint not null
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
@@ -40,9 +38,10 @@ create table if not exists five_gram_scores (
 
 create table if not exists one_grams (
     id    bigint not null auto_increment primary key,
-    word  text   not null unique,
+    word  text   not null,
     score bigint not null,
 
+    index idx_one_grams_word (word(255)),
     index idx_one_grams_score (score)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
