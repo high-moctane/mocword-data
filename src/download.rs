@@ -1,7 +1,7 @@
 use std::io;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter, SeekFrom};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use indoc::indoc;
 use log::{error, info};
 use lru::LruCache;
 use num_cpus;
-use reqwest;
+use reqwest::blocking::Client;
 use simplelog::{Config, LevelFilter, SimpleLogger};
 use tempfile;
 use thiserror::Error;
@@ -25,7 +25,7 @@ use crate::embedded_migrations;
 use crate::models;
 use crate::schema;
 
-const MAX_BUFFER_SIZE: usize = 10000;
+const MAX_BUFFER_SIZE: usize = 5000;
 const DEFAULT_CACHE_LENGTH: usize = 100_000_000;
 
 const PART_OF_SPEECHES: [&str; 12] = [
@@ -42,9 +42,8 @@ pub fn run() -> Result<()> {
     info!("args: {:?}", &args);
     let pool = new_conn_pool(&args).context("failed to establish conn")?;
     migrate(&pool).context("failed to migrate")?;
-    let mut cache = Arc::new(Mutex::new(LruCache::new(args.cache)));
     (1..=5).try_for_each(|n| {
-        download_and_save_all(&args, &pool, n, &mut cache)
+        download_and_save_all(&args, &pool, n)
             .with_context(|| format!("failed to download and save all {}-gram", n))
     })?;
 
@@ -165,21 +164,26 @@ fn download_and_save_all(
     args: &Args,
     pool: &Pool<ConnectionManager<MysqlConnection>>,
     n: i64,
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<()> {
     info!("start: {}-grams download and save all", n);
 
     let thread_pool = ThreadPool::new(args.parallel);
+    let client = Client::builder().pool_max_idle_per_host(2).build()?;
 
-    for query in gen_queries(args.lang, n).into_iter() {
-        let pool = pool.clone();
-        let cache = Arc::clone(cache);
-        thread_pool.execute(move || download_and_save(pool, query, cache).unwrap());
-    }
+    {
+        let cache = Arc::new(Mutex::new(LruCache::new(args.cache)));
 
-    thread_pool.join();
-    if thread_pool.panic_count() > 0 {
-        bail!("panic occured on download_and_save");
+        for query in gen_queries(args.lang, n).into_iter() {
+            let pool = pool.clone();
+            let client = client.clone();
+            let cache = Arc::clone(&cache);
+            thread_pool.execute(move || download_and_save(pool, client, query, cache).unwrap());
+        }
+
+        thread_pool.join();
+        if thread_pool.panic_count() > 0 {
+            bail!("panic occured on download_and_save");
+        }
     }
 
     finalize(pool, n).with_context(|| format!("failed to finalize {}-gram", n))?;
@@ -191,6 +195,7 @@ fn download_and_save_all(
 
 fn download_and_save(
     pool: Pool<ConnectionManager<MysqlConnection>>,
+    client: Client,
     query: Query,
     mut cache: Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<()> {
@@ -203,7 +208,8 @@ fn download_and_save(
     let conn = pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
         let mut file = tempfile::tempfile().context("failed to create tempfile")?;
-        download(&query, &mut file).with_context(|| format!("failed to download: {:?}", &query))?;
+        download(&client, &query, &mut file)
+            .with_context(|| format!("failed to download: {:?}", &query))?;
         file.seek(SeekFrom::Start(0))
             .context("failed to seek file")?;
 
@@ -393,13 +399,15 @@ fn mark_fetched_file(conn: &MysqlConnection, query: &Query) -> Result<()> {
     Ok(())
 }
 
-fn download(query: &Query, w: &mut impl Write) -> Result<()> {
-    info!("start: download {:?}", &query);
-
+fn download(client: &Client, query: &Query, w: &mut impl Write) -> Result<()> {
     let url = file_url(&query);
 
-    let response =
-        reqwest::blocking::get(&url).with_context(|| format!("failed to download {}", &url))?;
+    let response = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("failed to download {}", &url))?;
+
+    info!("start: download {:?}", &query);
 
     io::copy(&mut BufReader::new(response), &mut BufWriter::new(w))
         .with_context(|| format!("failed to save {:?}", query))?;
@@ -506,9 +514,18 @@ fn save_two_gram_scores(
 ) -> Result<()> {
     let mut values = vec![];
     for entry in entries.iter() {
+        let prefix_id = match get_id(conn, &entry.ngram[..1], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+        let suffix_id = match get_id(conn, &entry.ngram[1..], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+
         let value = models::NewTwoGramScore {
-            prefix_id: get_idx(conn, &entry.ngram[0..1], cache)?,
-            suffix_id: get_idx(conn, &entry.ngram[1..], cache)?,
+            prefix_id,
+            suffix_id,
             score: entry.score,
         };
         values.push(value);
@@ -529,9 +546,18 @@ fn save_three_gram_scores(
 ) -> Result<()> {
     let mut values = vec![];
     for entry in entries.iter() {
+        let prefix_id = match get_id(conn, &entry.ngram[..2], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+        let suffix_id = match get_id(conn, &entry.ngram[2..], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+
         let value = models::NewThreeGramScore {
-            prefix_id: get_idx(conn, &entry.ngram[0..2], cache)?,
-            suffix_id: get_idx(conn, &entry.ngram[2..], cache)?,
+            prefix_id,
+            suffix_id,
             score: entry.score,
         };
         values.push(value);
@@ -552,9 +578,18 @@ fn save_four_gram_scores(
 ) -> Result<()> {
     let mut values = vec![];
     for entry in entries.iter() {
+        let prefix_id = match get_id(conn, &entry.ngram[..3], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+        let suffix_id = match get_id(conn, &entry.ngram[3..], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+
         let value = models::NewFourGramScore {
-            prefix_id: get_idx(conn, &entry.ngram[0..3], cache)?,
-            suffix_id: get_idx(conn, &entry.ngram[3..], cache)?,
+            prefix_id,
+            suffix_id,
             score: entry.score,
         };
         values.push(value);
@@ -575,9 +610,18 @@ fn save_five_gram_scores(
 ) -> Result<()> {
     let mut values = vec![];
     for entry in entries.iter() {
+        let prefix_id = match get_id(conn, &entry.ngram[..4], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+        let suffix_id = match get_id(conn, &entry.ngram[4..], cache)? {
+            Some(id) => id,
+            None => continue,
+        };
+
         let value = models::NewFiveGramScore {
-            prefix_id: get_idx(conn, &entry.ngram[0..4], cache)?,
-            suffix_id: get_idx(conn, &entry.ngram[4..], cache)?,
+            prefix_id,
+            suffix_id,
             score: entry.score,
         };
         values.push(value);
@@ -591,27 +635,20 @@ fn save_five_gram_scores(
     Ok(())
 }
 
-fn get_idx(
+fn get_id(
     conn: &MysqlConnection,
     words: &[String],
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
-    let mut cache = cache.lock().unwrap();
-    get_id_unlocked(conn, words, &mut cache)
-}
-
-fn get_id_unlocked(
-    conn: &MysqlConnection,
-    words: &[String],
-    cache: &mut MutexGuard<LruCache<String, Option<i64>>>,
-) -> Result<Option<i64>> {
     let line = words.join(" ");
 
-    if let Some(res) = cache.get(&line) {
-        return Ok(*res);
+    {
+        if let Some(res) = cache.lock().unwrap().get(&line) {
+            return Ok(*res);
+        }
     }
 
-    let id = match words.len() {
+    let opt_id = match words.len() {
         1 => get_one_gram_id(conn, &words[0]),
         2 => get_two_gram_id(conn, words, cache),
         3 => get_three_gram_id(conn, words, cache),
@@ -621,96 +658,152 @@ fn get_id_unlocked(
     }
     .with_context(|| format!("failed to get id {}", &line))?;
 
-    cache.put(line, id);
+    {
+        cache.lock().unwrap().put(line, opt_id);
+    }
 
-    Ok(id)
+    Ok(opt_id)
 }
 
-fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<i64> {
+fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i64>> {
     use schema::one_grams::dsl;
 
     let res = dsl::one_grams
         .filter(dsl::word.eq_all(word))
         .first::<models::OneGram>(conn)
-        .with_context(|| format!("failed to get id {}", word))?;
+        .with_context(|| format!("failed to get id {}", word));
 
-    Ok(res.id)
+    match res {
+        Ok(val) => Ok(Some(val.id)),
+        Err(e) => match is_not_found_error(&e) {
+            true => Ok(None),
+            false => Err(e),
+        },
+    }
 }
 
 fn get_two_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut MutexGuard<LruCache<String, Option<i64>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
     use schema::two_grams::dsl;
 
-    let prefix_id = get_id_unlocked(conn, &words[0..1], cache)?;
-    let suffix_id = get_id_unlocked(conn, &words[1..2], cache)?;
+    let prefix_id = match get_id(conn, &words[..1], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let suffix_id = match get_id(conn, &words[1..], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
 
     let res = dsl::two_grams
         .filter(dsl::prefix_id.eq_all(prefix_id))
         .filter(dsl::suffix_id.eq_all(suffix_id))
         .first::<models::TwoGram>(conn)
-        .with_context(|| format!("failed to get id {:?}", words))?;
+        .with_context(|| format!("failed to get id {:?}", words));
 
-    Ok(res.id)
+    match res {
+        Ok(val) => Ok(Some(val.id)),
+        Err(e) => match is_not_found_error(&e) {
+            true => Ok(None),
+            false => Err(e),
+        },
+    }
 }
 
 fn get_three_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut MutexGuard<LruCache<String, Option<i64>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
     use schema::three_grams::dsl;
 
-    let prefix_id = get_id_unlocked(conn, &words[0..2], cache)?;
-    let suffix_id = get_id_unlocked(conn, &words[2..3], cache)?;
+    let prefix_id = match get_id(conn, &words[..2], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let suffix_id = match get_id(conn, &words[2..], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
 
     let res = dsl::three_grams
         .filter(dsl::prefix_id.eq_all(prefix_id))
         .filter(dsl::suffix_id.eq_all(suffix_id))
         .first::<models::ThreeGram>(conn)
-        .with_context(|| format!("failed to get id {:?}", words))?;
+        .with_context(|| format!("failed to get id {:?}", words));
 
-    Ok(res.id)
+    match res {
+        Ok(val) => Ok(Some(val.id)),
+        Err(e) => match is_not_found_error(&e) {
+            true => Ok(None),
+            false => Err(e),
+        },
+    }
 }
 
 fn get_four_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut MutexGuard<LruCache<String, Option<i64>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
     use schema::four_grams::dsl;
 
-    let prefix_id = get_id_unlocked(conn, &words[0..3], cache)?;
-    let suffix_id = get_id_unlocked(conn, &words[3..4], cache)?;
+    let prefix_id = match get_id(conn, &words[..3], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let suffix_id = match get_id(conn, &words[3..], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
 
     let res = dsl::four_grams
         .filter(dsl::prefix_id.eq_all(prefix_id))
         .filter(dsl::suffix_id.eq_all(suffix_id))
         .first::<models::FourGram>(conn)
-        .with_context(|| format!("failed to get id {:?}", words))?;
+        .with_context(|| format!("failed to get id {:?}", words));
 
-    Ok(res.id)
+    match res {
+        Ok(val) => Ok(Some(val.id)),
+        Err(e) => match is_not_found_error(&e) {
+            true => Ok(None),
+            false => Err(e),
+        },
+    }
 }
 
 fn get_five_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut MutexGuard<LruCache<String, Option<i64>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
     use schema::five_grams::dsl;
 
-    let prefix_id = get_id_unlocked(conn, &words[0..4], cache)?;
-    let suffix_id = get_id_unlocked(conn, &words[4..5], cache)?;
+    let prefix_id = match get_id(conn, &words[..4], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let suffix_id = match get_id(conn, &words[4..], cache)? {
+        Some(id) => id,
+        None => return Ok(None),
+    };
 
     let res = dsl::five_grams
         .filter(dsl::prefix_id.eq_all(prefix_id))
         .filter(dsl::suffix_id.eq_all(suffix_id))
         .first::<models::FiveGram>(conn)
-        .with_context(|| format!("failed to get id {:?}", words))?;
+        .with_context(|| format!("failed to get id {:?}", words));
 
-    Ok(res.id)
+    match res {
+        Ok(val) => Ok(Some(val.id)),
+        Err(e) => match is_not_found_error(&e) {
+            true => Ok(None),
+            false => Err(e),
+        },
+    }
 }
 
 fn is_not_found_error(err: &anyhow::Error) -> bool {
@@ -750,8 +843,7 @@ struct Query {
 }
 
 fn gen_queries(lang: Language, n: i64) -> Vec<Query> {
-    // (0..total_file_num(lang, n))
-    (10..12)
+    (0..total_file_num(lang, n))
         .into_iter()
         .map(|idx| Query { lang, n, idx })
         .collect()

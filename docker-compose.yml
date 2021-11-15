@@ -2,19 +2,19 @@ version: '3'
 services:
   app:
     build: .
-    environment:
-      MARIADB_ROOT_PASSWORD: "rootpw"
-      MARIADB_DATABASE: "mocword"
-      MARIADB_USER: "moctane"
-      MARIADB_PASSWORD: "pw"
+    # environment:
+    #   MARIADB_ROOT_PASSWORD: "rootpw"
+    #   MARIADB_DATABASE: "mocword"
+    #   MARIADB_USER: "moctane"
+    #   MARIADB_PASSWORD: "pw"
 
   mariadb:
-    image: "mariadb:10.6"
+    image: "mysql:8"
     environment:
-      MARIADB_ROOT_PASSWORD: "rootpw"
-      MARIADB_DATABASE: "mocword"
-      MARIADB_USER: "moctane"
-      MARIADB_PASSWORD: "pw"
+      MYSQL_ROOT_PASSWORD: "rootpw"
+      MYSQL_DATABASE: "mocword"
+      MYSQL_USER: "moctane"
+      MYSQL_PASSWORD: "pw"
     ports:
       - "3306:3306"
     volumes:
