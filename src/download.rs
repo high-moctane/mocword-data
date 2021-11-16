@@ -25,8 +25,8 @@ use crate::embedded_migrations;
 use crate::models;
 use crate::schema;
 
-const MAX_BUFFER_SIZE: usize = 5000;
-const DEFAULT_CACHE_LENGTH: usize = 100_000_000;
+const MAX_BUFFER_SIZE: usize = 10000;
+const DEFAULT_CACHE_LENGTH: usize = 100_000;
 
 const PART_OF_SPEECHES: [&str; 12] = [
     "_NOUN_", "_._", "_VERB_", "_ADP_", "_DET_", "_ADJ_", "_PRON_", "_ADV_", "_NUM_", "_CONJ_",
@@ -103,7 +103,7 @@ fn get_args() -> Result<Args> {
     let lang: Language = Language::from(matches.value_of("lang").unwrap_or("eng"));
     let parallel = matches
         .value_of("parallel")
-        .unwrap_or(&format!("{}", num_cpus::get()))
+        .unwrap_or(&format!("{}", num_cpus::get() * 2))
         .parse()?;
     let dsn = matches
         .value_of("dsn")
@@ -866,7 +866,7 @@ impl Entry {
         let ngram = &elems[0];
         let counts = &elems[1..];
 
-        let ngram: Vec<_> = ngram.split("\t").map(|w| w.to_string()).collect();
+        let ngram: Vec<_> = ngram.split(" ").map(|w| w.to_string()).collect();
         if ngram.len() != n as usize {
             return Err(EntryError::InvalidLengthNgram {
                 n,
@@ -911,6 +911,6 @@ enum EntryError {
     #[error("invalid counts ({counts})")]
     InvalidCounts { counts: String },
 
-    #[error("invalid counts ({ngram})")]
+    #[error("invalid word ({ngram})")]
     InvalidWord { ngram: String },
 }
