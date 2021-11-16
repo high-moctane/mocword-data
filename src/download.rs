@@ -1,6 +1,5 @@
 use std::io;
-use std::io::prelude::*;
-use std::io::{BufReader, BufWriter, SeekFrom};
+use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
