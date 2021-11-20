@@ -15,13 +15,15 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release
 
-FROM debian:bullseye-slim AS runtime
+FROM mariadb:10.6 AS runtime
 WORKDIR app
 ENV RUST_BACKTRACE=1
 RUN set -xe \
     && apt-get update \
-    && apt-get install -y default-mysql-client \
+    && apt-get install -y sudo \
     && rm -rf /var/lib/apt/lists/* \
     && true
 COPY --from=builder /app/target/release/mocword-data /usr/local/bin
-ENTRYPOINT ["/usr/local/bin/mocword-data"]
+COPY entrypoint.sh .
+# ENTRYPOINT ["/usr/local/bin/mocword-data"]
+ENTRYPOINT ["./entrypoint.sh"]
