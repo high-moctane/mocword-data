@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::io::{prelude::*, BufReader, BufWriter, SeekFrom};
 use std::sync::{Arc, Mutex};
@@ -8,15 +9,13 @@ use anyhow::{bail, Context, Result};
 use clap::{App, Arg};
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::{prelude::*, Connection, MysqlConnection};
-use exponential_backoff::Backoff;
 use flate2::read::GzDecoder;
 use indoc::indoc;
 use log::{error, info};
 use lru::LruCache;
-use num_cpus;
 use reqwest::blocking::Client;
 use simplelog::{Config, LevelFilter, SimpleLogger};
-use tempfile;
+use tempfile::NamedTempFile;
 use thiserror::Error;
 use threadpool::ThreadPool;
 
@@ -24,8 +23,7 @@ use crate::embedded_migrations;
 use crate::models;
 use crate::schema;
 
-const MAX_BUFFER_SIZE: usize = 10000;
-const DEFAULT_CACHE_LENGTH: usize = 100_000;
+const DEFAULT_CACHE_LENGTH: usize = 1_000_000;
 
 const PART_OF_SPEECHES: [&str; 12] = [
     "_NOUN_", "_._", "_VERB_", "_ADP_", "_DET_", "_ADJ_", "_PRON_", "_ADV_", "_NUM_", "_CONJ_",
@@ -102,7 +100,7 @@ fn get_args() -> Result<Args> {
     let lang: Language = Language::from(matches.value_of("lang").unwrap_or("eng"));
     let parallel = matches
         .value_of("parallel")
-        .unwrap_or(&format!("{}", num_cpus::get() * 2))
+        .unwrap_or(&format!("{}", 6))
         .parse()?;
     let dsn = matches
         .value_of("dsn")
@@ -122,34 +120,33 @@ fn get_args() -> Result<Args> {
 }
 
 fn mariadb_dsn() -> String {
-    format!("mysql://moctane:pw@mariadb:3306/mocword")
-}
-
-#[derive(Debug, Error)]
-enum NetworkError {
-    #[error("failed to establish connection")]
-    DBConnectionError(),
+    format!("mysql://root:rootpw@localhost/mocword")
 }
 
 fn new_conn_pool(args: &Args) -> Result<Pool<ConnectionManager<MysqlConnection>>> {
-    let backoff = Backoff::new(8, Duration::from_millis(100), Duration::from_secs(10));
-
-    for duration in &backoff {
+    loop {
         let manager = ConnectionManager::<MysqlConnection>::new(&args.dsn);
         let pool = Pool::builder()
             .max_size(args.parallel as u32)
             .build(manager);
 
-        match pool {
-            Ok(pool) => return Ok(pool),
+        let pool = match pool {
+            Ok(pool) => pool,
             Err(e) => {
                 error!("failed to establish pool: {}", e);
-                thread::sleep(duration);
+                thread::sleep(Duration::from_secs(10));
+                continue;
             }
         };
-    }
 
-    Err(NetworkError::DBConnectionError())?
+        if let Err(e) = diesel::sql_query("select 1").execute(&pool.get()?) {
+            error!("failed to establish pool: {}", e);
+            thread::sleep(Duration::from_secs(10));
+            continue;
+        }
+
+        return Ok(pool);
+    }
 }
 
 fn migrate(pool: &Pool<ConnectionManager<MysqlConnection>>) -> Result<()> {
@@ -206,13 +203,21 @@ fn download_and_save(
 
     let conn = pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
-        let mut file = tempfile::tempfile().context("failed to create tempfile")?;
-        download(&client, &query, &mut file)
+        let mut gz_file = NamedTempFile::new().context("failed to create tempfile")?;
+        download(&client, &query, &mut gz_file)
             .with_context(|| format!("failed to download: {:?}", &query))?;
-        file.seek(SeekFrom::Start(0))
+        gz_file
+            .seek(SeekFrom::Start(0))
             .context("failed to seek file")?;
 
-        read_and_save(&conn, &query, &mut file, &mut cache)
+        let mut tsv_file = NamedTempFile::new().context("failed to create tempfile")?;
+        save_to_tsv(&conn, &query, &mut gz_file, &mut tsv_file, &mut cache)
+            .with_context(|| format!("failed to save tsv: {:?}", &query))?;
+        tsv_file
+            .seek(SeekFrom::Start(0))
+            .context("failed to seek file")?;
+
+        save_to_db(&conn, &query, tsv_file.path().to_str().unwrap())
             .with_context(|| format!("failed to read and save: {:?}", &query))?;
         mark_fetched_file(&conn, &query)
             .with_context(|| format!("failed to mark fetched file: {:?}", &query))?;
@@ -245,24 +250,9 @@ fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<(
 
 fn finalize_one_gram(conn: &MysqlConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
-        use schema::one_grams::dsl;
-
-        let count_result = dsl::one_grams.first::<models::OneGram>(conn);
-        if let Ok(_) = count_result {
-            return Ok(());
-        }
-
-        diesel::sql_query(indoc! {"
-            INSERT INTO one_grams
-            SELECT
-                DENSE_RANK() OVER (ORDER BY score DESC, word ASC) as id,
-                word,
-                score
-            FROM one_gram_scores
-        "})
-        .execute(conn)?;
-
-        diesel::delete(schema::one_gram_scores::table).execute(conn)?;
+        diesel::sql_query("create index idx_one_grams_word on one_grams(word(255))")
+            .execute(conn)?;
+        diesel::sql_query("create index idx_one_grams_score on one_grams(score)").execute(conn)?;
 
         Ok(())
     })
@@ -270,25 +260,27 @@ fn finalize_one_gram(conn: &MysqlConnection) -> Result<()> {
 
 fn finalize_two_gram(conn: &MysqlConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
-        use schema::two_grams::dsl;
-
-        let count_result = dsl::two_grams.first::<models::TwoGram>(conn);
-        if let Ok(_) = count_result {
-            return Ok(());
-        }
-
+        diesel::sql_query(
+            "create unique index idx_two_grams_ngram on two_grams(prefix_id, suffix_id)",
+        )
+        .execute(conn)?;
+        diesel::sql_query("create index idx_two_grams_score on two_grams(score)").execute(conn)?;
         diesel::sql_query(indoc! {"
-            INSERT INTO two_grams
-            SELECT
-                DENSE_RANK() OVER (ORDER BY score DESC, word ASC) as id,
-                prefix_id,
-                suffix_id,
-                score
-            FROM two_gram_scores
+            alter table two_grams
+                add constraint two_grams_ibfk_prefix_id
+                foreign key (prefix_id) references one_grams(id)
+                on delete cascade
+                on update cascade
         "})
         .execute(conn)?;
-
-        diesel::delete(schema::two_gram_scores::table).execute(conn)?;
+        diesel::sql_query(indoc! {"
+            alter table two_grams
+                add constraint two_grams_ibfk_suffix_id
+                foreign key (suffix_id) references one_grams(id)
+                on delete cascade
+                on update cascade
+        "})
+        .execute(conn)?;
 
         Ok(())
     })
@@ -296,25 +288,28 @@ fn finalize_two_gram(conn: &MysqlConnection) -> Result<()> {
 
 fn finalize_three_gram(conn: &MysqlConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
-        use schema::three_grams::dsl;
-
-        let count_result = dsl::three_grams.first::<models::ThreeGram>(conn);
-        if let Ok(_) = count_result {
-            return Ok(());
-        }
-
+        diesel::sql_query(
+            "create unique index idx_three_grams_ngram on three_grams(prefix_id, suffix_id)",
+        )
+        .execute(conn)?;
+        diesel::sql_query("create index idx_three_grams_score on three_grams(score)")
+            .execute(conn)?;
         diesel::sql_query(indoc! {"
-            INSERT INTO three_grams
-            SELECT
-                DENSE_RANK() OVER (ORDER BY score DESC, word ASC) as id,
-                prefix_id,
-                suffix_id,
-                score
-            FROM three_gram_scores
+            alter table three_grams
+                add constraint three_grams_ibfk_prefix_id
+                foreign key (prefix_id) references two_grams(id)
+                on delete cascade
+                on update cascade
         "})
         .execute(conn)?;
-
-        diesel::delete(schema::three_gram_scores::table).execute(conn)?;
+        diesel::sql_query(indoc! {"
+            alter table three_grams
+                add constraint three_grams_ibfk_suffix_id
+                foreign key (suffix_id) references one_grams(id)
+                on delete cascade
+                on update cascade
+        "})
+        .execute(conn)?;
 
         Ok(())
     })
@@ -322,25 +317,28 @@ fn finalize_three_gram(conn: &MysqlConnection) -> Result<()> {
 
 fn finalize_four_gram(conn: &MysqlConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
-        use schema::four_grams::dsl;
-
-        let count_result = dsl::four_grams.first::<models::FourGram>(conn);
-        if let Ok(_) = count_result {
-            return Ok(());
-        }
-
+        diesel::sql_query(
+            "create unique index idx_four_grams_ngram on four_grams(prefix_id, suffix_id)",
+        )
+        .execute(conn)?;
+        diesel::sql_query("create index idx_four_grams_score on four_grams(score)")
+            .execute(conn)?;
         diesel::sql_query(indoc! {"
-            INSERT INTO four_grams
-            SELECT
-                DENSE_RANK() OVER (ORDER BY score DESC, word ASC) as id,
-                prefix_id,
-                suffix_id,
-                score
-            FROM four_gram_scores
+            alter table four_grams
+                add constraint four_grams_ibfk_prefix_id
+                foreign key (prefix_id) references three_grams(id)
+                on delete cascade
+                on update cascade
         "})
         .execute(conn)?;
-
-        diesel::delete(schema::four_gram_scores::table).execute(conn)?;
+        diesel::sql_query(indoc! {"
+            alter table four_grams
+                add constraint four_grams_ibfk_suffix_id
+                foreign key (suffix_id) references one_grams(id)
+                on delete cascade
+                on update cascade
+        "})
+        .execute(conn)?;
 
         Ok(())
     })
@@ -348,25 +346,28 @@ fn finalize_four_gram(conn: &MysqlConnection) -> Result<()> {
 
 fn finalize_five_gram(conn: &MysqlConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
-        use schema::five_grams::dsl;
-
-        let count_result = dsl::five_grams.first::<models::FiveGram>(conn);
-        if let Ok(_) = count_result {
-            return Ok(());
-        }
-
+        diesel::sql_query(
+            "create unique index idx_five_grams_ngram on five_grams(prefix_id, suffix_id)",
+        )
+        .execute(conn)?;
+        diesel::sql_query("create index idx_five_grams_score on five_grams(score)")
+            .execute(conn)?;
         diesel::sql_query(indoc! {"
-            INSERT INTO five_grams
-            SELECT
-                DENSE_RANK() OVER (ORDER BY score DESC, word ASC) as id,
-                prefix_id,
-                suffix_id,
-                score
-            FROM five_gram_scores
+            alter table five_grams
+                add constraint five_grams_ibfk_prefix_id
+                foreign key (prefix_id) references four_grams(id)
+                on delete cascade
+                on update cascade
         "})
         .execute(conn)?;
-
-        diesel::delete(schema::five_gram_scores::table).execute(conn)?;
+        diesel::sql_query(indoc! {"
+            alter table five_grams
+                add constraint five_grams_ibfk_suffix_id
+                foreign key (suffix_id) references one_grams(id)
+                on delete cascade
+                on update cascade
+        "})
+        .execute(conn)?;
 
         Ok(())
     })
@@ -439,197 +440,79 @@ fn total_file_num(lang: Language, n: i64) -> i64 {
     }
 }
 
-fn read_and_save(
+fn save_to_tsv(
     conn: &MysqlConnection,
     query: &Query,
     gz_data: &mut impl Read,
+    tsv_data: &mut impl Write,
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<()> {
-    info!("start: read and save {:?}", &query);
+    info!("start: save to tsv {:?}", &query);
 
     let r = GzDecoder::new(gz_data);
     let r = BufReader::new(r);
+    let mut w = BufWriter::new(tsv_data);
 
-    let mut entries = vec![];
-    for line in r.lines() {
-        let line = line?;
-        match Entry::new(&line, query.n) {
-            Ok(entry) => entries.push(entry),
-            Err(_) => continue,
-        };
-
-        if entries.len() >= MAX_BUFFER_SIZE {
-            save(conn, query, &entries, cache)?;
-            entries = vec![];
+    match query.n {
+        1 => {
+            for line in r.lines() {
+                let entry = match Entry::new(&line?, query.n) {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                writeln!(w, "{}", entry)
+                    .with_context(|| format!("failed to save to csv: {:?}", query))?;
+            }
+        }
+        _ => {
+            for line in r.lines() {
+                let entry = match Entry::new(&line?, query.n) {
+                    Ok(entry) => entry,
+                    Err(_) => continue,
+                };
+                let indexed_entry = IndexedEntry::new(conn, &entry, cache)
+                    .with_context(|| format!("failed to save to csv: {:?}", query))?;
+                match indexed_entry {
+                    Some(ent) => {
+                        writeln!(w, "{}", ent)
+                            .with_context(|| format!("failed to save to csv: {:?}", query))?;
+                    }
+                    None => continue,
+                }
+            }
         }
     }
-    if entries.len() > 0 {
-        save(conn, query, &entries, cache)
-            .with_context(|| format!("failed to save {:?}", &query))?;
-    }
 
-    info!("end  : read and save {:?}", &query);
+    info!("end  : save to tsv {:?}", &query);
 
     Ok(())
 }
 
-fn save(
-    conn: &MysqlConnection,
-    query: &Query,
-    entries: &[Entry],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<()> {
-    match query.n {
-        1 => save_one_gram_scores(conn, entries),
-        2 => save_two_gram_scores(conn, entries, cache),
-        3 => save_three_gram_scores(conn, entries, cache),
-        4 => save_four_gram_scores(conn, entries, cache),
-        5 => save_five_gram_scores(conn, entries, cache),
+fn save_to_db(conn: &MysqlConnection, query: &Query, tsv_data_filename: &str) -> Result<()> {
+    info!("start: save to db {:?}", query);
+
+    let table_name = match query.n {
+        1 => "one_grams",
+        2 => "two_grams",
+        3 => "three_grams",
+        4 => "four_grams",
+        5 => "five_grams",
         _ => panic!("invalid query: {:?}", query),
-    }
-}
+    };
 
-fn save_one_gram_scores(conn: &MysqlConnection, entries: &[Entry]) -> Result<()> {
-    let values: Vec<_> = entries
-        .iter()
-        .map(|entry| models::NewOneGramScore {
-            word: entry.ngram[0].to_owned(),
-            score: entry.score,
-        })
-        .collect();
+    let fields = match query.n {
+        1 => "(word, score)",
+        _ => "(prefix_id, suffix_id, score)",
+    };
 
-    diesel::insert_into(schema::one_gram_scores::table)
-        .values(&values)
-        .execute(conn)
-        .context(format!("failed to save one_gram_scores"))?;
+    diesel::sql_query(format!(
+        "load data infile '{}' ignore into table {} fields terminated by '\\t' {}",
+        tsv_data_filename, table_name, fields,
+    ))
+    .execute(conn)
+    .with_context(|| format!("failed to save to db: {:?}", query))?;
 
-    Ok(())
-}
-
-fn save_two_gram_scores(
-    conn: &MysqlConnection,
-    entries: &[Entry],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<()> {
-    let mut values = vec![];
-    for entry in entries.iter() {
-        let prefix_id = match get_id(conn, &entry.ngram[..1], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-        let suffix_id = match get_id(conn, &entry.ngram[1..], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-
-        let value = models::NewTwoGramScore {
-            prefix_id,
-            suffix_id,
-            score: entry.score,
-        };
-        values.push(value);
-    }
-
-    diesel::insert_into(schema::two_gram_scores::table)
-        .values(&values)
-        .execute(conn)
-        .context(format!("failed to save two_gram_scores"))?;
-
-    Ok(())
-}
-
-fn save_three_gram_scores(
-    conn: &MysqlConnection,
-    entries: &[Entry],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<()> {
-    let mut values = vec![];
-    for entry in entries.iter() {
-        let prefix_id = match get_id(conn, &entry.ngram[..2], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-        let suffix_id = match get_id(conn, &entry.ngram[2..], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-
-        let value = models::NewThreeGramScore {
-            prefix_id,
-            suffix_id,
-            score: entry.score,
-        };
-        values.push(value);
-    }
-
-    diesel::insert_into(schema::three_gram_scores::table)
-        .values(&values)
-        .execute(conn)
-        .context(format!("failed to save three_gram_scores"))?;
-
-    Ok(())
-}
-
-fn save_four_gram_scores(
-    conn: &MysqlConnection,
-    entries: &[Entry],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<()> {
-    let mut values = vec![];
-    for entry in entries.iter() {
-        let prefix_id = match get_id(conn, &entry.ngram[..3], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-        let suffix_id = match get_id(conn, &entry.ngram[3..], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-
-        let value = models::NewFourGramScore {
-            prefix_id,
-            suffix_id,
-            score: entry.score,
-        };
-        values.push(value);
-    }
-
-    diesel::insert_into(schema::four_gram_scores::table)
-        .values(&values)
-        .execute(conn)
-        .context(format!("failed to save four_gram_scores"))?;
-
-    Ok(())
-}
-
-fn save_five_gram_scores(
-    conn: &MysqlConnection,
-    entries: &[Entry],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<()> {
-    let mut values = vec![];
-    for entry in entries.iter() {
-        let prefix_id = match get_id(conn, &entry.ngram[..4], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-        let suffix_id = match get_id(conn, &entry.ngram[4..], cache)? {
-            Some(id) => id,
-            None => continue,
-        };
-
-        let value = models::NewFiveGramScore {
-            prefix_id,
-            suffix_id,
-            score: entry.score,
-        };
-        values.push(value);
-    }
-
-    diesel::insert_into(schema::five_gram_scores::table)
-        .values(&values)
-        .execute(conn)
-        .context(format!("failed to save five_gram_scores"))?;
+    info!("end  : save to db {:?}", query);
 
     Ok(())
 }
@@ -652,7 +535,6 @@ fn get_id(
         2 => get_two_gram_id(conn, words, cache),
         3 => get_three_gram_id(conn, words, cache),
         4 => get_four_gram_id(conn, words, cache),
-        5 => get_five_gram_id(conn, words, cache),
         _ => panic!("invalid words {:?}", words),
     }
     .with_context(|| format!("failed to get id {}", &line))?;
@@ -774,37 +656,6 @@ fn get_four_gram_id(
     }
 }
 
-fn get_five_gram_id(
-    conn: &MysqlConnection,
-    words: &[String],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-) -> Result<Option<i64>> {
-    use schema::five_grams::dsl;
-
-    let prefix_id = match get_id(conn, &words[..4], cache)? {
-        Some(id) => id,
-        None => return Ok(None),
-    };
-    let suffix_id = match get_id(conn, &words[4..], cache)? {
-        Some(id) => id,
-        None => return Ok(None),
-    };
-
-    let res = dsl::five_grams
-        .filter(dsl::prefix_id.eq_all(prefix_id))
-        .filter(dsl::suffix_id.eq_all(suffix_id))
-        .first::<models::FiveGram>(conn)
-        .with_context(|| format!("failed to get id {:?}", words));
-
-    match res {
-        Ok(val) => Ok(Some(val.id)),
-        Err(e) => match is_not_found_error(&e) {
-            true => Ok(None),
-            false => Err(e),
-        },
-    }
-}
-
 fn is_not_found_error(err: &anyhow::Error) -> bool {
     match err.downcast_ref::<diesel::result::Error>() {
         Some(diesel::result::Error::NotFound) => true,
@@ -893,6 +744,12 @@ impl Entry {
     }
 }
 
+impl fmt::Display for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\t{}", self.ngram.join(" "), self.score)
+    }
+}
+
 fn is_valid_word(word: &str) -> bool {
     return word.len() > 0
         && PART_OF_SPEECHES.iter().all(|ps| word != *ps)
@@ -912,4 +769,44 @@ enum EntryError {
 
     #[error("invalid word ({ngram})")]
     InvalidWord { ngram: String },
+}
+
+struct IndexedEntry {
+    prefix_id: i64,
+    suffix_id: i64,
+    score: i64,
+}
+
+impl IndexedEntry {
+    fn new(
+        conn: &MysqlConnection,
+        from: &Entry,
+        cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
+    ) -> Result<Option<IndexedEntry>> {
+        let prefix = &from.ngram[..(from.ngram.len() - 1)];
+        let suffix = &from.ngram[(from.ngram.len() - 1)..];
+
+        let prefix_id = match get_id(conn, prefix, cache) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let suffix_id = match get_id(conn, suffix, cache) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        Ok(Some(IndexedEntry {
+            prefix_id,
+            suffix_id,
+            score: from.score,
+        }))
+    }
+}
+
+impl fmt::Display for IndexedEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\t{}\t{}", self.prefix_id, self.suffix_id, self.score)
+    }
 }
