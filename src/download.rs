@@ -23,7 +23,7 @@ use crate::embedded_migrations;
 use crate::models;
 use crate::schema;
 
-const DEFAULT_CACHE_LENGTH: usize = 1_000_000;
+const DEFAULT_CACHE_LENGTH: usize = 5_000_000;
 
 const PART_OF_SPEECHES: [&str; 12] = [
     "_NOUN_", "_._", "_VERB_", "_ADP_", "_DET_", "_ADJ_", "_PRON_", "_ADV_", "_NUM_", "_CONJ_",
@@ -165,6 +165,13 @@ fn download_and_save_all(
 
     let thread_pool = ThreadPool::new(args.parallel);
     let client = Client::builder().pool_max_idle_per_host(2).build()?;
+
+    if gen_queries(args.lang, n)
+        .iter()
+        .all(|q| is_fetched_file(pool, q).unwrap())
+    {
+        return Ok(());
+    }
 
     {
         let cache = Arc::new(Mutex::new(LruCache::new(args.cache)));
