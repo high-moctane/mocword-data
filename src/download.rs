@@ -166,13 +166,6 @@ fn download_and_save_all(
     let thread_pool = ThreadPool::new(args.parallel);
     let client = Client::builder().pool_max_idle_per_host(2).build()?;
 
-    if gen_queries(args.lang, n)
-        .iter()
-        .all(|q| is_fetched_file(pool, q).unwrap())
-    {
-        return Ok(());
-    }
-
     {
         let cache = Arc::new(Mutex::new(LruCache::new(args.cache)));
 
@@ -240,7 +233,7 @@ fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<(
     info!("start: finalize {}-gram", n);
 
     let conn = pool.get()?;
-    match n {
+    let res = match n {
         1 => finalize_one_gram(&conn),
         2 => finalize_two_gram(&conn),
         3 => finalize_three_gram(&conn),
@@ -248,7 +241,10 @@ fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<(
         5 => finalize_five_gram(&conn),
         _ => panic!("invalid {}-gram", n),
     }
-    .with_context(|| format!("failed to finalize {}-gram", n))?;
+    .with_context(|| format!("failed to finalize {}-gram", n));
+    if let Err(e) = res {
+        error!("{}", e);
+    }
 
     info!("end  : finalize {}-gram", n);
 
