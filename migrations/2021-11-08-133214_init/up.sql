@@ -1,45 +1,52 @@
 create sequence seq;
 
 create table if not exists one_grams (
-    id    bigint not null default (next value for seq) primary key,
+    id    int    not null default (next value for seq) primary key,
     word  text   not null,
     score bigint not null
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
-create sequence seq_two_grams;
-
 create table if not exists two_grams (
-    id        bigint not null default (next value for seq) primary key,
-    prefix_id bigint not null,
-    suffix_id bigint not null,
-    score     bigint not null
+    word1 int    not null,
+    word2 int    not null,
+    score bigint not null,
+
+    primary key (word1, word2)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists three_grams (
-    id        bigint not null default (next value for seq) primary key,
-    prefix_id bigint not null,
-    suffix_id bigint not null,
-    score     bigint not null
+    word1 int    not null,
+    word2 int    not null,
+    word3 int    not null,
+    score bigint not null,
+
+    primary key (word1, word2, word3)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists four_grams (
-    id        bigint not null default (next value for seq) primary key,
-    prefix_id bigint not null,
-    suffix_id bigint not null,
-    score     bigint not null
+    word1 int    not null,
+    word2 int    not null,
+    word3 int    not null,
+    word4 int    not null,
+    score bigint not null,
+
+    primary key (word1, word2, word3, word4)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists five_grams (
-    prefix_id bigint not null,
-    suffix_id bigint not null,
-    score     bigint not null,
+    word1 int    not null,
+    word2 int    not null,
+    word3 int    not null,
+    word4 int    not null,
+    word5 int    not null,
+    score bigint not null,
 
-    primary key (prefix_id, suffix_id)
+    primary key (word1, word2, word3, word4, word5)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';
 
 create table if not exists fetched_files (
-    n        bigint not null,
-    idx      bigint not null,
+    n        int not null,
+    idx      int not null,
 
     primary key (n, idx)
 ) engine innodb charset 'utf8mb4' collate 'utf8mb4_bin';

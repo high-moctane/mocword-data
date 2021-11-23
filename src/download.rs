@@ -159,7 +159,7 @@ fn migrate(pool: &Pool<ConnectionManager<MysqlConnection>>) -> Result<()> {
 fn download_and_save_all(
     args: &Args,
     pool: &Pool<ConnectionManager<MysqlConnection>>,
-    n: i64,
+    n: i32,
 ) -> Result<()> {
     info!("start: {}-grams download and save all", n);
 
@@ -229,7 +229,7 @@ fn download_and_save(
     Ok(())
 }
 
-fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<()> {
+fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i32) -> Result<()> {
     info!("start: finalize {}-gram", n);
 
     let conn = pool.get()?;
@@ -430,7 +430,7 @@ fn file_url(query: &Query) -> String {
     )
 }
 
-fn total_file_num(lang: Language, n: i64) -> i64 {
+fn total_file_num(lang: Language, n: i32) -> i32 {
     match lang {
         Language::English => match n {
             1 => 24,
@@ -549,7 +549,7 @@ fn get_id(
     Ok(opt_id)
 }
 
-fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i64>> {
+fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i32>> {
     use schema::one_grams::dsl;
 
     let res = dsl::one_grams
@@ -569,7 +569,7 @@ fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i64>> {
 fn get_two_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i32>>>>,
 ) -> Result<Option<i64>> {
     use schema::two_grams::dsl;
 
@@ -600,7 +600,7 @@ fn get_two_gram_id(
 fn get_three_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i32>>>>,
 ) -> Result<Option<i64>> {
     use schema::three_grams::dsl;
 
@@ -631,7 +631,7 @@ fn get_three_gram_id(
 fn get_four_gram_id(
     conn: &MysqlConnection,
     words: &[String],
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
+    cache: &mut Arc<Mutex<LruCache<String, Option<i32>>>>,
 ) -> Result<Option<i64>> {
     use schema::four_grams::dsl;
 
@@ -691,11 +691,11 @@ impl From<&str> for Language {
 #[derive(Debug)]
 struct Query {
     lang: Language,
-    n: i64,
-    idx: i64,
+    n: i32,
+    idx: i32,
 }
 
-fn gen_queries(lang: Language, n: i64) -> Vec<Query> {
+fn gen_queries(lang: Language, n: i32) -> Vec<Query> {
     (0..total_file_num(lang, n))
         .into_iter()
         .map(|idx| Query { lang, n, idx })
@@ -708,7 +708,7 @@ struct Entry {
 }
 
 impl Entry {
-    fn new(line: &str, n: i64) -> Result<Entry> {
+    fn new(line: &str, n: i32) -> Result<Entry> {
         let elems: Vec<_> = line.split("\t").collect();
         if elems.len() < 2 {
             return Err(EntryError::InvalidLengthEntry {
