@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use clap::{App, Arg};
 use diesel::r2d2::{ConnectionManager, Pool};
-use diesel::{prelude::*, Connection, MysqlConnection};
+use diesel::{prelude::*, Connection, SqliteConnection};
 use flate2::read::GzDecoder;
 use indoc::indoc;
 use log::{error, info};
@@ -23,8 +23,6 @@ use crate::embedded_migrations;
 use crate::models;
 use crate::schema;
 
-const DEFAULT_CACHE_LENGTH: usize = 5_000_000;
-
 const PART_OF_SPEECHES: [&str; 12] = [
     "_NOUN_", "_._", "_VERB_", "_ADP_", "_DET_", "_ADJ_", "_PRON_", "_ADV_", "_NUM_", "_CONJ_",
     "_PRT_", "_X_",
@@ -34,16 +32,6 @@ const PART_OF_SPEECH_SUFFIXES: [&str; 12] = [
 ];
 
 pub fn run() -> Result<()> {
-    initialize().context("failed to initialize")?;
-    let args = get_args().context("failed to get args")?;
-    info!("args: {:?}", &args);
-    let pool = new_conn_pool(&args).context("failed to establish conn")?;
-    migrate(&pool).context("failed to migrate")?;
-    (1..=5).try_for_each(|n| {
-        download_and_save_all(&args, &pool, n)
-            .with_context(|| format!("failed to download and save all {}-gram", n))
-    })?;
-
     Ok(())
 }
 
@@ -57,7 +45,6 @@ struct Args {
     lang: Language,
     parallel: usize,
     dsn: String,
-    cache: usize,
 }
 
 fn get_args() -> Result<Args> {
@@ -102,33 +89,23 @@ fn get_args() -> Result<Args> {
         .value_of("parallel")
         .unwrap_or(&format!("{}", 6))
         .parse()?;
-    let dsn = matches
-        .value_of("dsn")
-        .unwrap_or(&mariadb_dsn())
-        .to_string();
-    let cache = matches
-        .value_of("cache")
-        .unwrap_or(&format!("{}", DEFAULT_CACHE_LENGTH))
-        .parse()?;
+    let dsn = matches.value_of("dsn").unwrap_or(&sqlite_dsn()).to_string();
 
     Ok(Args {
         lang,
         parallel,
         dsn,
-        cache,
     })
 }
 
-fn mariadb_dsn() -> String {
-    format!("mysql://root:rootpw@localhost/mocword")
+fn sqlite_dsn() -> String {
+    format!("data.sqlite")
 }
 
-fn new_conn_pool(args: &Args) -> Result<Pool<ConnectionManager<MysqlConnection>>> {
+fn new_conn_pool(args: &Args) -> Result<Pool<ConnectionManager<SqliteConnection>>> {
     loop {
-        let manager = ConnectionManager::<MysqlConnection>::new(&args.dsn);
-        let pool = Pool::builder()
-            .max_size(args.parallel as u32)
-            .build(manager);
+        let manager = ConnectionManager::<SqliteConnection>::new(&args.dsn);
+        let pool = Pool::builder().max_size(1).build(manager);
 
         let pool = match pool {
             Ok(pool) => pool,
@@ -149,7 +126,7 @@ fn new_conn_pool(args: &Args) -> Result<Pool<ConnectionManager<MysqlConnection>>
     }
 }
 
-fn migrate(pool: &Pool<ConnectionManager<MysqlConnection>>) -> Result<()> {
+fn migrate(pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
     info!("start: migrate");
     embedded_migrations::run_with_output(&pool.get()?, &mut io::stdout())?;
     info!("end  : migrate");
@@ -158,7 +135,7 @@ fn migrate(pool: &Pool<ConnectionManager<MysqlConnection>>) -> Result<()> {
 
 fn download_and_save_all(
     args: &Args,
-    pool: &Pool<ConnectionManager<MysqlConnection>>,
+    pool: &Pool<ConnectionManager<SqliteConnection>>,
     n: i64,
 ) -> Result<()> {
     info!("start: {}-grams download and save all", n);
@@ -167,13 +144,10 @@ fn download_and_save_all(
     let client = Client::builder().pool_max_idle_per_host(2).build()?;
 
     {
-        let cache = Arc::new(Mutex::new(LruCache::new(args.cache)));
-
         for query in gen_queries(args.lang, n).into_iter() {
             let pool = pool.clone();
             let client = client.clone();
-            let cache = Arc::clone(&cache);
-            thread_pool.execute(move || download_and_save(pool, client, query, cache).unwrap());
+            thread_pool.execute(move || download_and_save(pool, client, query).unwrap());
         }
 
         thread_pool.join();
@@ -190,10 +164,9 @@ fn download_and_save_all(
 }
 
 fn download_and_save(
-    pool: Pool<ConnectionManager<MysqlConnection>>,
+    pool: Pool<ConnectionManager<SqliteConnection>>,
     client: Client,
     query: Query,
-    mut cache: Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<()> {
     if is_fetched_file(&pool, &query)? {
         return Ok(());
@@ -211,7 +184,7 @@ fn download_and_save(
             .context("failed to seek file")?;
 
         let mut tsv_file = NamedTempFile::new().context("failed to create tempfile")?;
-        save_to_tsv(&conn, &query, &mut gz_file, &mut tsv_file, &mut cache)
+        save_to_tsv(&conn, &query, &mut gz_file, &mut tsv_file)
             .with_context(|| format!("failed to save tsv: {:?}", &query))?;
         tsv_file
             .seek(SeekFrom::Start(0))
@@ -229,7 +202,7 @@ fn download_and_save(
     Ok(())
 }
 
-fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<()> {
+fn finalize(pool: &Pool<ConnectionManager<SqliteConnection>>, n: i64) -> Result<()> {
     info!("start: finalize {}-gram", n);
 
     let conn = pool.get()?;
@@ -251,7 +224,7 @@ fn finalize(pool: &Pool<ConnectionManager<MysqlConnection>>, n: i64) -> Result<(
     Ok(())
 }
 
-fn finalize_one_gram(conn: &MysqlConnection) -> Result<()> {
+fn finalize_one_gram(conn: &SqliteConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
         diesel::sql_query("create index idx_one_grams_word on one_grams(word(255))")
             .execute(conn)?;
@@ -261,7 +234,7 @@ fn finalize_one_gram(conn: &MysqlConnection) -> Result<()> {
     })
 }
 
-fn finalize_two_gram(conn: &MysqlConnection) -> Result<()> {
+fn finalize_two_gram(conn: &SqliteConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
         diesel::sql_query(
             "create unique index idx_two_grams_ngram on two_grams(prefix_id, suffix_id)",
@@ -289,7 +262,7 @@ fn finalize_two_gram(conn: &MysqlConnection) -> Result<()> {
     })
 }
 
-fn finalize_three_gram(conn: &MysqlConnection) -> Result<()> {
+fn finalize_three_gram(conn: &SqliteConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
         diesel::sql_query(
             "create unique index idx_three_grams_ngram on three_grams(prefix_id, suffix_id)",
@@ -318,7 +291,7 @@ fn finalize_three_gram(conn: &MysqlConnection) -> Result<()> {
     })
 }
 
-fn finalize_four_gram(conn: &MysqlConnection) -> Result<()> {
+fn finalize_four_gram(conn: &SqliteConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
         diesel::sql_query(
             "create unique index idx_four_grams_ngram on four_grams(prefix_id, suffix_id)",
@@ -347,7 +320,7 @@ fn finalize_four_gram(conn: &MysqlConnection) -> Result<()> {
     })
 }
 
-fn finalize_five_gram(conn: &MysqlConnection) -> Result<()> {
+fn finalize_five_gram(conn: &SqliteConnection) -> Result<()> {
     conn.transaction::<_, anyhow::Error, _>(|| {
         diesel::sql_query(
             "create unique index idx_five_grams_ngram on five_grams(prefix_id, suffix_id)",
@@ -376,7 +349,10 @@ fn finalize_five_gram(conn: &MysqlConnection) -> Result<()> {
     })
 }
 
-fn is_fetched_file(pool: &Pool<ConnectionManager<MysqlConnection>>, query: &Query) -> Result<bool> {
+fn is_fetched_file(
+    pool: &Pool<ConnectionManager<SqliteConnection>>,
+    query: &Query,
+) -> Result<bool> {
     use schema::fetched_files::dsl;
 
     let res = dsl::fetched_files
@@ -388,7 +364,7 @@ fn is_fetched_file(pool: &Pool<ConnectionManager<MysqlConnection>>, query: &Quer
     Ok(res.len() > 0)
 }
 
-fn mark_fetched_file(conn: &MysqlConnection, query: &Query) -> Result<()> {
+fn mark_fetched_file(conn: &SqliteConnection, query: &Query) -> Result<()> {
     let value = models::NewFetchedFile {
         n: query.n,
         idx: query.idx,
@@ -444,11 +420,10 @@ fn total_file_num(lang: Language, n: i64) -> i64 {
 }
 
 fn save_to_tsv(
-    conn: &MysqlConnection,
+    conn: &SqliteConnection,
     query: &Query,
     gz_data: &mut impl Read,
     tsv_data: &mut impl Write,
-    cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<()> {
     info!("start: save to tsv {:?}", &query);
 
@@ -473,7 +448,7 @@ fn save_to_tsv(
                     Ok(entry) => entry,
                     Err(_) => continue,
                 };
-                let indexed_entry = IndexedEntry::new(conn, &entry, cache)
+                let indexed_entry = IndexedEntry::new(conn, &entry)
                     .with_context(|| format!("failed to save to csv: {:?}", query))?;
                 match indexed_entry {
                     Some(ent) => {
@@ -491,7 +466,7 @@ fn save_to_tsv(
     Ok(())
 }
 
-fn save_to_db(conn: &MysqlConnection, query: &Query, tsv_data_filename: &str) -> Result<()> {
+fn save_to_db(conn: &SqliteConnection, query: &Query, tsv_data_filename: &str) -> Result<()> {
     info!("start: save to db {:?}", query);
 
     let table_name = match query.n {
@@ -521,7 +496,7 @@ fn save_to_db(conn: &MysqlConnection, query: &Query, tsv_data_filename: &str) ->
 }
 
 fn get_id(
-    conn: &MysqlConnection,
+    conn: &SqliteConnection,
     words: &[String],
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
@@ -549,7 +524,7 @@ fn get_id(
     Ok(opt_id)
 }
 
-fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i64>> {
+fn get_one_gram_id(conn: &SqliteConnection, word: &str) -> Result<Option<i64>> {
     use schema::one_grams::dsl;
 
     let res = dsl::one_grams
@@ -567,7 +542,7 @@ fn get_one_gram_id(conn: &MysqlConnection, word: &str) -> Result<Option<i64>> {
 }
 
 fn get_two_gram_id(
-    conn: &MysqlConnection,
+    conn: &SqliteConnection,
     words: &[String],
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
@@ -598,7 +573,7 @@ fn get_two_gram_id(
 }
 
 fn get_three_gram_id(
-    conn: &MysqlConnection,
+    conn: &SqliteConnection,
     words: &[String],
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
@@ -629,7 +604,7 @@ fn get_three_gram_id(
 }
 
 fn get_four_gram_id(
-    conn: &MysqlConnection,
+    conn: &SqliteConnection,
     words: &[String],
     cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
 ) -> Result<Option<i64>> {
@@ -781,15 +756,11 @@ struct IndexedEntry {
 }
 
 impl IndexedEntry {
-    fn new(
-        conn: &MysqlConnection,
-        from: &Entry,
-        cache: &mut Arc<Mutex<LruCache<String, Option<i64>>>>,
-    ) -> Result<Option<IndexedEntry>> {
+    fn new(conn: &SqliteConnection, from: &Entry) -> Result<Option<IndexedEntry>> {
         let prefix = &from.ngram[..(from.ngram.len() - 1)];
         let suffix = &from.ngram[(from.ngram.len() - 1)..];
 
-        let prefix_id = match get_id(conn, prefix, cache) {
+        let prefix_id = match get_id(conn, prefix) {
             Ok(Some(id)) => id,
             Ok(None) => return Ok(None),
             Err(e) => return Err(e),
