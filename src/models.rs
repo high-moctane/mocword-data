@@ -29,63 +29,72 @@ pub struct NewOneGram {
 
 #[derive(Queryable, Clone)]
 pub struct TwoGram {
-    pub id: i64,
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
     pub score: i64,
 }
 
 #[derive(Insertable, Debug)]
 #[table_name = "two_grams"]
 pub struct NewTwoGram {
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
     pub score: i64,
 }
 
 #[derive(Queryable, Clone)]
 pub struct ThreeGram {
-    pub id: i64,
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
     pub score: i64,
 }
 
 #[derive(Insertable, Debug)]
 #[table_name = "three_grams"]
 pub struct NewThreeGram {
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
     pub score: i64,
 }
 
 #[derive(Queryable, Clone)]
 pub struct FourGram {
-    pub id: i64,
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
+    pub word4: i64,
     pub score: i64,
 }
 
 #[derive(Insertable, Debug)]
 #[table_name = "four_grams"]
 pub struct NewFourGram {
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
+    pub word4: i64,
     pub score: i64,
 }
 
 #[derive(Queryable, Clone)]
 pub struct FiveGram {
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
+    pub word4: i64,
+    pub word5: i64,
     pub score: i64,
 }
 
 #[derive(Insertable, Debug)]
 #[table_name = "five_grams"]
 pub struct NewFiveGram {
-    pub prefix_id: i64,
-    pub suffix_id: i64,
+    pub word1: i64,
+    pub word2: i64,
+    pub word3: i64,
+    pub word4: i64,
+    pub word5: i64,
     pub score: i64,
 }

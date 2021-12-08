@@ -1,5 +1,2 @@
 *.sqlite
-/mariadbdata/**
 /target
-
-!/mariadbdata/.gitkeep

@@ -1,51 +1,53 @@
 table! {
     fetched_files (n, idx) {
-        n -> Bigint,
-        idx -> Bigint,
+        n -> BigInt,
+        idx -> BigInt,
     }
 }
 
 table! {
-    five_grams (id) {
-        id -> Bigint,
-        prefix_id -> Bigint,
-        suffix_id -> Bigint,
-        score -> Bigint,
+    five_grams (word1, word2, word3, word4, word5) {
+        word1 -> BigInt,
+        word2 -> BigInt,
+        word3 -> BigInt,
+        word4 -> BigInt,
+        word5 -> BigInt,
+        score -> BigInt,
     }
 }
 
 table! {
-    four_grams (id) {
-        id -> Bigint,
-        prefix_id -> Bigint,
-        suffix_id -> Bigint,
-        score -> Bigint,
+    four_grams (word1, word2, word3, word4) {
+        word1 -> BigInt,
+        word2 -> BigInt,
+        word3 -> BigInt,
+        word4 -> BigInt,
+        score -> BigInt,
     }
 }
 
 table! {
     one_grams (id) {
-        id -> Bigint,
+        id -> BigInt,
         word -> Text,
-        score -> Bigint,
+        score -> BigInt,
     }
 }
 
 table! {
-    three_grams (id) {
-        id -> Bigint,
-        prefix_id -> Bigint,
-        suffix_id -> Bigint,
-        score -> Bigint,
+    three_grams (word1, word2, word3) {
+        word1 -> BigInt,
+        word2 -> BigInt,
+        word3 -> BigInt,
+        score -> BigInt,
     }
 }
 
 table! {
-    two_grams (id) {
-        id -> Bigint,
-        prefix_id -> Bigint,
-        suffix_id -> Bigint,
-        score -> Bigint,
+    two_grams (word1, word2) {
+        word1 -> BigInt,
+        word2 -> BigInt,
+        score -> BigInt,
     }
 }
 
