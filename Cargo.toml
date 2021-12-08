@@ -17,6 +17,7 @@ indoc = "1.0"
 log = "0.4"
 lru = "0.7"
 num_cpus = "1.13"
+radix_trie = "0.2.1"
 reqwest = { version = "0.11", features = ["blocking"] }
 simplelog = "0.10"
 tempfile = "3.2"
