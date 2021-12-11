@@ -7,9 +7,11 @@ use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::{prelude::*, Connection, SqliteConnection};
 use flate2::read::GzDecoder;
 use log::info;
-use radix_trie::Trie;
+use num_cpus;
+// use radix_trie::Trie;
 use reqwest::blocking::Client;
 use simplelog::{Config, LevelFilter, SimpleLogger};
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, prelude::*, BufReader, BufWriter, SeekFrom};
 use std::sync::Arc;
@@ -30,11 +32,16 @@ const BULK_INSERT_SIZE: usize = 10000;
 
 pub fn run() -> Result<()> {
     initialize().context("failed to initalize")?;
+
+    info!("start");
+
     let args = get_args()?;
     let conn_pool = new_conn_pool(&args).context("failed to establish conn")?;
     migrate(&conn_pool).context("failed to migrate")?;
     download_and_save_all(&args, &conn_pool).context("failed to download and save")?;
-    finalize(&args, &conn_pool).context("failed to finalize")?;
+    finalize(&conn_pool).context("failed to finalize")?;
+
+    info!("end");
     Ok(())
 }
 
@@ -91,7 +98,7 @@ fn get_args() -> Result<Args> {
     // TODO
     let parallel = matches
         .value_of("parallel")
-        .unwrap_or(&format!("{}", 6))
+        .unwrap_or(&format!("{}", num_cpus::get()))
         .parse()?;
     let dsn = matches.value_of("dsn").unwrap_or(&dsn()).to_string();
 
@@ -181,6 +188,8 @@ fn download_and_save_one_gram(
         return Ok(());
     }
 
+    info!("start: {:?}", query);
+
     let mut gz_file = NamedTempFile::new().context("failed to create tempfile")?;
     download(&client, &query, &mut gz_file)
         .with_context(|| format!("failed to download: {:?}", &query))?;
@@ -189,6 +198,8 @@ fn download_and_save_one_gram(
         .context("failed to seek file")?;
     let r = GzDecoder::new(gz_file);
     let r = BufReader::new(r);
+
+    info!("start: save {:?}", query);
 
     let conn = conn_pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
@@ -207,7 +218,7 @@ fn download_and_save_one_gram(
                 entries = vec![];
             }
         }
-        if entries.len() >= BULK_INSERT_SIZE {
+        if entries.len() > 0 {
             save_one_gram(&conn, query, &entries)
                 .with_context(|| format!("failed to save {:?}", query))?;
         }
@@ -217,7 +228,10 @@ fn download_and_save_one_gram(
         Ok(())
     })?;
 
-    unimplemented!();
+    info!("end  : save {:?}", query);
+    info!("end  : {:?}", query);
+
+    Ok(())
 }
 
 fn save_one_gram(conn: &SqliteConnection, query: &Query, entries: &[Entry]) -> Result<()> {
@@ -240,7 +254,7 @@ fn save_one_gram(conn: &SqliteConnection, query: &Query, entries: &[Entry]) -> R
 fn download_and_save_ngrams(
     args: &Args,
     conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-    cache: Trie<String, i64>,
+    cache: HashMap<String, i64>,
 ) -> Result<()> {
     let thread_pool = ThreadPool::new(args.parallel);
     let client = Client::builder().pool_max_idle_per_host(2).build()?;
@@ -286,11 +300,13 @@ fn download_and_save_ngram(
     conn_pool: Pool<ConnectionManager<SqliteConnection>>,
     client: Client,
     query: Query,
-    cache: Arc<Trie<String, i64>>,
+    cache: Arc<HashMap<String, i64>>,
 ) -> Result<()> {
     if is_fetched_file(&conn_pool, &query)? {
         return Ok(());
     }
+
+    info!("start: {:?}", &query);
 
     let mut gz_file = NamedTempFile::new().context("failed to create tempfile")?;
     download(&client, &query, &mut gz_file)
@@ -300,7 +316,8 @@ fn download_and_save_ngram(
         .context("failed to seek file")?;
 
     let mut tsv_file = NamedTempFile::new().context("failed to create tempfile")?;
-    save_to_tsv(&query, &mut gz_file, &mut tsv_file, &cache)
+    let mut r = GzDecoder::new(gz_file);
+    save_to_tsv(&query, &mut r, &mut tsv_file, &cache)
         .with_context(|| format!("failed to save tsv: {:?}", &query))?;
     tsv_file
         .seek(SeekFrom::Start(0))
@@ -308,23 +325,27 @@ fn download_and_save_ngram(
 
     let conn = conn_pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
-        save_tsv_to_db(&conn, &query, tsv_file.path().to_str().unwrap())?;
+        save_tsv_to_db(&conn, &query, &mut tsv_file)?;
         mark_fetched_file(&conn, &query)?;
         Ok(())
     })?;
 
-    unimplemented!();
+    info!("end  : {:?}", &query);
+
+    Ok(())
 }
 
 fn save_to_tsv(
     query: &Query,
     r: &mut impl Read,
     w: &mut impl Write,
-    cache: &Arc<Trie<String, i64>>,
+    cache: &Arc<HashMap<String, i64>>,
 ) -> Result<()> {
+    info!("start: save to tsv {:?}", query);
+
     let r = BufReader::new(r);
 
-    for line in r.lines() {
+    'outer: for line in r.lines() {
         let line = line?;
         let entry = match Entry::new(&line, query.n) {
             Ok(entry) => entry,
@@ -335,7 +356,7 @@ fn save_to_tsv(
         for word in entry.ngram.iter() {
             let id = match cache.get(word) {
                 Some(id) => *id,
-                None => continue,
+                None => continue 'outer,
             };
             ids.push(id);
         }
@@ -351,33 +372,190 @@ fn save_to_tsv(
         )?;
     }
 
-    unimplemented!();
+    info!("end  : save to tsv {:?}", query);
+
+    Ok(())
 }
 
-fn save_tsv_to_db(conn: &SqliteConnection, query: &Query, tsv_filename: &str) -> Result<()> {
-    let table_name = match query.n {
-        2 => "two_grams",
-        3 => "three_grams",
-        4 => "four_grams",
-        5 => "five_grams",
-        _ => panic!("invalid ngram: {}", query.n),
-    };
+fn save_tsv_to_db(conn: &SqliteConnection, query: &Query, tsv: &mut impl Read) -> Result<()> {
+    info!("start: save to db {:?}", query);
 
-    diesel::sql_query(format!(".import {} {}", tsv_filename, table_name))
-        .execute(conn)
-        .with_context(|| format!("failed to save tsv to db: {:?} {}", query, tsv_filename))?;
+    match query.n {
+        2 => save_tsv_to_db_two_gram(conn, query, tsv),
+        3 => save_tsv_to_db_three_gram(conn, query, tsv),
+        4 => save_tsv_to_db_four_gram(conn, query, tsv),
+        5 => save_tsv_to_db_five_gram(conn, query, tsv),
+        _ => panic!("invalid ngram: {}", query.n),
+    }
+    .with_context(|| format!("failed to save tsv {:?}", query))?;
+
+    info!("end  : save to db {:?}", query);
+
+    Ok(())
+}
+
+fn save_tsv_to_db_two_gram(
+    conn: &SqliteConnection,
+    query: &Query,
+    tsv: &mut impl Read,
+) -> Result<()> {
+    let r = BufReader::new(tsv);
+
+    let mut values = vec![];
+    for line in r.lines() {
+        let line = line?;
+        let mut elems = line.split("\t");
+        let value = models::NewTwoGram {
+            word1: elems.next().unwrap().parse()?,
+            word2: elems.next().unwrap().parse()?,
+            score: elems.next().unwrap().parse()?,
+        };
+        values.push(value);
+
+        if values.len() >= BULK_INSERT_SIZE {
+            diesel::insert_or_ignore_into(schema::two_grams::table)
+                .values(&values)
+                .execute(conn)
+                .with_context(|| format!("failed to save {:?}", query))?;
+            values = vec![];
+        }
+    }
+    if values.len() > 0 {
+        diesel::insert_or_ignore_into(schema::two_grams::table)
+            .values(&values)
+            .execute(conn)
+            .with_context(|| format!("failed to save {:?}", query))?;
+    }
+
+    Ok(())
+}
+
+fn save_tsv_to_db_three_gram(
+    conn: &SqliteConnection,
+    query: &Query,
+    tsv: &mut impl Read,
+) -> Result<()> {
+    let r = BufReader::new(tsv);
+
+    let mut values = vec![];
+    for line in r.lines() {
+        let line = line?;
+        let mut elems = line.split("\t");
+        let value = models::NewThreeGram {
+            word1: elems.next().unwrap().parse()?,
+            word2: elems.next().unwrap().parse()?,
+            word3: elems.next().unwrap().parse()?,
+            score: elems.next().unwrap().parse()?,
+        };
+        values.push(value);
+
+        if values.len() >= BULK_INSERT_SIZE {
+            diesel::insert_or_ignore_into(schema::three_grams::table)
+                .values(&values)
+                .execute(conn)
+                .with_context(|| format!("failed to save {:?}", query))?;
+            values = vec![];
+        }
+    }
+    if values.len() > 0 {
+        diesel::insert_or_ignore_into(schema::three_grams::table)
+            .values(&values)
+            .execute(conn)
+            .with_context(|| format!("failed to save {:?}", query))?;
+    }
+
+    Ok(())
+}
+
+fn save_tsv_to_db_four_gram(
+    conn: &SqliteConnection,
+    query: &Query,
+    tsv: &mut impl Read,
+) -> Result<()> {
+    let r = BufReader::new(tsv);
+
+    let mut values = vec![];
+    for line in r.lines() {
+        let line = line?;
+        let mut elems = line.split("\t");
+        let value = models::NewFourGram {
+            word1: elems.next().unwrap().parse()?,
+            word2: elems.next().unwrap().parse()?,
+            word3: elems.next().unwrap().parse()?,
+            word4: elems.next().unwrap().parse()?,
+            score: elems.next().unwrap().parse()?,
+        };
+        values.push(value);
+
+        if values.len() >= BULK_INSERT_SIZE {
+            diesel::insert_or_ignore_into(schema::four_grams::table)
+                .values(&values)
+                .execute(conn)
+                .with_context(|| format!("failed to save {:?}", query))?;
+            values = vec![];
+        }
+    }
+    if values.len() > 0 {
+        diesel::insert_or_ignore_into(schema::four_grams::table)
+            .values(&values)
+            .execute(conn)
+            .with_context(|| format!("failed to save {:?}", query))?;
+    }
+
+    Ok(())
+}
+
+fn save_tsv_to_db_five_gram(
+    conn: &SqliteConnection,
+    query: &Query,
+    tsv: &mut impl Read,
+) -> Result<()> {
+    let r = BufReader::new(tsv);
+
+    let mut values = vec![];
+    for line in r.lines() {
+        let line = line?;
+        let mut elems = line.split("\t");
+        let value = models::NewFiveGram {
+            word1: elems.next().unwrap().parse()?,
+            word2: elems.next().unwrap().parse()?,
+            word3: elems.next().unwrap().parse()?,
+            word4: elems.next().unwrap().parse()?,
+            word5: elems.next().unwrap().parse()?,
+            score: elems.next().unwrap().parse()?,
+        };
+        values.push(value);
+
+        if values.len() >= BULK_INSERT_SIZE {
+            diesel::insert_or_ignore_into(schema::five_grams::table)
+                .values(&values)
+                .execute(conn)
+                .with_context(|| format!("failed to save {:?}", query))?;
+            values = vec![];
+        }
+    }
+    if values.len() > 0 {
+        diesel::insert_or_ignore_into(schema::five_grams::table)
+            .values(&values)
+            .execute(conn)
+            .with_context(|| format!("failed to save {:?}", query))?;
+    }
 
     Ok(())
 }
 
 fn get_one_grams_cache(
     conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-) -> Result<Trie<String, i64>> {
+) -> Result<HashMap<String, i64>> {
     use schema::one_grams::dsl;
+
+    info!("start: get one grams cache");
 
     let one_grams = dsl::one_grams
         .load::<models::OneGram>(&conn_pool.get()?)
         .context("failed to get one grams")?;
+
+    info!("end  : get one grams cache");
 
     Ok(one_grams
         .into_iter()
@@ -385,8 +563,38 @@ fn get_one_grams_cache(
         .collect())
 }
 
-fn finalize(args: &Args, conn_pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
-    unimplemented!();
+fn finalize(conn_pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
+    info!("start: create idx_one_grams_score");
+    diesel::sql_query("create index idx_one_grams_score on one_grams(score)")
+        .execute(&conn_pool.get()?)
+        .context("failed to create idx_one_grams_score")?;
+    info!("end  : create idx_one_grams_score");
+
+    info!("start: create idx_two_grams_score");
+    diesel::sql_query("create index idx_two_grams_score on two_grams(score)")
+        .execute(&conn_pool.get()?)
+        .context("failed to create idx_two_grams_score")?;
+    info!("end  : create idx_two_grams_score");
+
+    info!("start: create idx_three_grams_score");
+    diesel::sql_query("create index idx_three_grams_score on three_grams(score)")
+        .execute(&conn_pool.get()?)
+        .context("failed to create idx_three_grams_score")?;
+    info!("end  : create idx_three_grams_score");
+
+    info!("start: create idx_four_grams_score");
+    diesel::sql_query("create index idx_four_grams_score on four_grams(score)")
+        .execute(&conn_pool.get()?)
+        .context("failed to create idx_four_grams_score")?;
+    info!("end  : create idx_four_grams_score");
+
+    info!("start: create idx_five_grams_score");
+    diesel::sql_query("create index idx_five_grams_score on five_grams(score)")
+        .execute(&conn_pool.get()?)
+        .context("failed to create idx_five_grams_score")?;
+    info!("end  : create idx_five_grams_score");
+
+    Ok(())
 }
 
 #[derive(Debug)]
