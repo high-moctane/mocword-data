@@ -8,7 +8,6 @@ use diesel::{prelude::*, Connection, SqliteConnection};
 use flate2::read::GzDecoder;
 use log::info;
 use num_cpus;
-// use radix_trie::Trie;
 use reqwest::blocking::Client;
 use simplelog::{Config, LevelFilter, SimpleLogger};
 use std::collections::HashMap;
@@ -551,16 +550,32 @@ fn get_one_grams_cache(
 
     info!("start: get one grams cache");
 
-    let one_grams = dsl::one_grams
-        .load::<models::OneGram>(&conn_pool.get()?)
-        .context("failed to get one grams")?;
+    let mut res = HashMap::new();
+
+    let mut start = 0;
+    let width = BULK_INSERT_SIZE as i64;
+
+    loop {
+        let one_grams = dsl::one_grams
+            .filter(dsl::id.ge(start))
+            .filter(dsl::id.lt(start + width))
+            .load::<models::OneGram>(&conn_pool.get()?)
+            .context("failed to get one grams")?;
+
+        start += width;
+
+        if one_grams.len() == 0 {
+            break;
+        }
+
+        for one_gram in one_grams.into_iter() {
+            res.insert(one_gram.word, one_gram.id);
+        }
+    }
 
     info!("end  : get one grams cache");
 
-    Ok(one_grams
-        .into_iter()
-        .map(|one_gram| (one_gram.word, one_gram.score))
-        .collect())
+    Ok(res)
 }
 
 fn finalize(conn_pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
