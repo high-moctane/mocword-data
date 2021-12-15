@@ -9,7 +9,7 @@ edition = "2021"
 anyhow = "1.0"
 chrono = "0.4"
 clap = "2.33"
-diesel = { version = "1.4", features = ["sqlite", "r2d2", "chrono"]  }
+diesel = { version = "1.4", features = ["sqlite"]  }
 diesel_migrations = "1.4"
 exponential-backoff = "1.0"
 flate2 = "1.0"

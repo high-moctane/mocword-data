@@ -3,7 +3,6 @@ use crate::models;
 use crate::schema;
 use anyhow::{bail, Context, Result};
 use clap::{App, Arg};
-use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::{prelude::*, Connection, SqliteConnection};
 use flate2::read::GzDecoder;
 use log::info;
@@ -35,10 +34,10 @@ pub fn run() -> Result<()> {
     info!("start");
 
     let args = get_args()?;
-    let conn_pool = new_conn_pool(&args).context("failed to establish conn")?;
-    migrate(&conn_pool).context("failed to migrate")?;
-    download_and_save_all(&args, &conn_pool).context("failed to download and save")?;
-    finalize(&conn_pool).context("failed to finalize")?;
+    let conn = new_conn(&args).context("failed to establish conn")?;
+    migrate(&conn).context("failed to migrate")?;
+    download_and_save_all(&args, &conn).context("failed to download and save")?;
+    finalize(&conn).context("failed to finalize")?;
 
     info!("end");
     Ok(())
@@ -94,7 +93,6 @@ fn get_args() -> Result<Args> {
         .get_matches();
 
     let lang: Language = Language::from(matches.value_of("lang").unwrap_or("eng"));
-    // TODO
     let parallel = matches
         .value_of("parallel")
         .unwrap_or(&format!("{}", num_cpus::get()))
@@ -134,44 +132,33 @@ impl From<&str> for Language {
     }
 }
 
-fn new_conn_pool(args: &Args) -> Result<Pool<ConnectionManager<SqliteConnection>>> {
-    let manager = ConnectionManager::<SqliteConnection>::new(&args.dsn);
-    Pool::builder()
-        .max_size(1)
-        .build(manager)
-        .context("failed to establish conn pool")
+fn new_conn(args: &Args) -> Result<SqliteConnection> {
+    SqliteConnection::establish(&args.dsn)
+        .with_context(|| format!("failed to establish {}", &args.dsn))
 }
 
-fn migrate(pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
+fn migrate(conn: &SqliteConnection) -> Result<()> {
     info!("start: migrate");
-    embedded_migrations::run_with_output(&pool.get()?, &mut io::stdout())?;
+    embedded_migrations::run_with_output(conn, &mut io::stdout())?;
     info!("end  : migrate");
     Ok(())
 }
 
-fn download_and_save_all(
-    args: &Args,
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-) -> Result<()> {
-    download_and_save_one_grams(args, conn_pool)
-        .context("failed to download and save one grams")?;
-    let cache = get_one_grams_cache(conn_pool).context("failed to get one grams cache")?;
-    download_and_save_ngrams(args, conn_pool, cache)
-        .context("failed to download and save ngrams")?;
+fn download_and_save_all(args: &Args, conn: &SqliteConnection) -> Result<()> {
+    download_and_save_one_grams(args, conn).context("failed to download and save one grams")?;
+    let cache = get_one_grams_cache(conn).context("failed to get one grams cache")?;
+    download_and_save_ngrams(args, conn, cache).context("failed to download and save ngrams")?;
 
     Ok(())
 }
 
-fn download_and_save_one_grams(
-    args: &Args,
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-) -> Result<()> {
+fn download_and_save_one_grams(args: &Args, conn: &SqliteConnection) -> Result<()> {
     let n = 1;
 
     let client = Client::builder().pool_max_idle_per_host(2).build()?;
 
     for query in gen_queries(args.lang, n).iter() {
-        download_and_save_one_gram(conn_pool, &client, query)
+        download_and_save_one_gram(conn, &client, query)
             .with_context(|| format!("failed to download and save {:?}", query))?;
     }
 
@@ -179,11 +166,11 @@ fn download_and_save_one_grams(
 }
 
 fn download_and_save_one_gram(
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
+    conn: &SqliteConnection,
     client: &Client,
     query: &Query,
 ) -> Result<()> {
-    if is_fetched_file(&conn_pool, &query)? {
+    if is_fetched_file(&conn, &query)? {
         return Ok(());
     }
 
@@ -200,7 +187,6 @@ fn download_and_save_one_gram(
 
     info!("start: save {:?}", query);
 
-    let conn = conn_pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
         let mut entries = vec![];
         for line in r.lines() {
@@ -252,7 +238,7 @@ fn save_one_gram(conn: &SqliteConnection, query: &Query, entries: &[Entry]) -> R
 
 fn download_and_save_ngrams(
     args: &Args,
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
+    conn: &SqliteConnection,
     cache: HashMap<String, i64>,
 ) -> Result<()> {
     let thread_pool = ThreadPool::new(args.parallel);
@@ -261,11 +247,11 @@ fn download_and_save_ngrams(
 
     for n in 1..=5 {
         for query in gen_queries(args.lang, n).into_iter() {
-            let conn_pool = conn_pool.clone();
+            let conn = conn.clone();
             let client = client.clone();
             let cache = Arc::clone(&cache);
             thread_pool
-                .execute(move || download_and_save_ngram(conn_pool, client, query, cache).unwrap());
+                .execute(move || download_and_save_ngram(conn, client, query, cache).unwrap());
         }
     }
 
@@ -296,12 +282,12 @@ fn download(client: &Client, query: &Query, w: &mut impl Write) -> Result<()> {
 }
 
 fn download_and_save_ngram(
-    conn_pool: Pool<ConnectionManager<SqliteConnection>>,
+    conn: SqliteConnection,
     client: Client,
     query: Query,
     cache: Arc<HashMap<String, i64>>,
 ) -> Result<()> {
-    if is_fetched_file(&conn_pool, &query)? {
+    if is_fetched_file(&conn, &query)? {
         return Ok(());
     }
 
@@ -322,7 +308,6 @@ fn download_and_save_ngram(
         .seek(SeekFrom::Start(0))
         .context("failed to seek file")?;
 
-    let conn = conn_pool.get()?;
     conn.transaction::<_, anyhow::Error, _>(|| {
         save_tsv_to_db(&conn, &query, &mut tsv_file)?;
         mark_fetched_file(&conn, &query)?;
@@ -543,9 +528,7 @@ fn save_tsv_to_db_five_gram(
     Ok(())
 }
 
-fn get_one_grams_cache(
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-) -> Result<HashMap<String, i64>> {
+fn get_one_grams_cache(conn: &SqliteConnection) -> Result<HashMap<String, i64>> {
     use schema::one_grams::dsl;
 
     info!("start: get one grams cache");
@@ -559,7 +542,7 @@ fn get_one_grams_cache(
         let one_grams = dsl::one_grams
             .filter(dsl::id.ge(start))
             .filter(dsl::id.lt(start + width))
-            .load::<models::OneGram>(&conn_pool.get()?)
+            .load::<models::OneGram>(&conn)
             .context("failed to get one grams")?;
 
         start += width;
@@ -578,34 +561,34 @@ fn get_one_grams_cache(
     Ok(res)
 }
 
-fn finalize(conn_pool: &Pool<ConnectionManager<SqliteConnection>>) -> Result<()> {
+fn finalize(conn: &SqliteConnection) -> Result<()> {
     info!("start: create idx_one_grams_score");
     diesel::sql_query("create index idx_one_grams_score on one_grams(score)")
-        .execute(&conn_pool.get()?)
+        .execute(conn)
         .context("failed to create idx_one_grams_score")?;
     info!("end  : create idx_one_grams_score");
 
     info!("start: create idx_two_grams_score");
     diesel::sql_query("create index idx_two_grams_score on two_grams(score)")
-        .execute(&conn_pool.get()?)
+        .execute(conn)
         .context("failed to create idx_two_grams_score")?;
     info!("end  : create idx_two_grams_score");
 
     info!("start: create idx_three_grams_score");
     diesel::sql_query("create index idx_three_grams_score on three_grams(score)")
-        .execute(&conn_pool.get()?)
+        .execute(conn)
         .context("failed to create idx_three_grams_score")?;
     info!("end  : create idx_three_grams_score");
 
     info!("start: create idx_four_grams_score");
     diesel::sql_query("create index idx_four_grams_score on four_grams(score)")
-        .execute(&conn_pool.get()?)
+        .execute(conn)
         .context("failed to create idx_four_grams_score")?;
     info!("end  : create idx_four_grams_score");
 
     info!("start: create idx_five_grams_score");
     diesel::sql_query("create index idx_five_grams_score on five_grams(score)")
-        .execute(&conn_pool.get()?)
+        .execute(conn)
         .context("failed to create idx_five_grams_score")?;
     info!("end  : create idx_five_grams_score");
 
@@ -721,16 +704,13 @@ enum EntryError {
     InvalidWord { ngram: String },
 }
 
-fn is_fetched_file(
-    conn_pool: &Pool<ConnectionManager<SqliteConnection>>,
-    query: &Query,
-) -> Result<bool> {
+fn is_fetched_file(conn: &SqliteConnection, query: &Query) -> Result<bool> {
     use schema::fetched_files::dsl;
 
     let res = dsl::fetched_files
         .filter(dsl::n.eq_all(query.n))
         .filter(dsl::idx.eq_all(query.idx))
-        .load::<models::FetchedFile>(&conn_pool.get()?)
+        .load::<models::FetchedFile>(&conn)
         .with_context(|| format!("failed to fetch fetched_files ({:?})", &query))?;
 
     Ok(res.len() > 0)
