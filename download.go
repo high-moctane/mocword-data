@@ -13,10 +13,22 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 )
 
-const Sentinel = 0xFFFF
+var PartOfSpeeches = []string{
+	"_NOUN_", "_._", "_VERB_", "_ADP_", "_DET_", "_ADJ_", "_PRON_", "_ADV_", "_NUM_", "_CONJ_",
+	"_PRT_", "_X_",
+}
+
+var PartOfSpeechSuffixes = []string{
+	"_NOUN", "_.", "_VERB", "_ADP", "_DET", "_ADJ", "_PRON", "_ADV", "_NUM", "_CONJ", "_PRT", "_X",
+}
+
+var reg = regexp.MustCompile("_(?:NOUN|.|VERB|ADP|DET|ADJ|PRON|ADV|NUM|CONJ|PRT|X)")
 
 var dlSema = make(chan struct{}, 2)
 var parseSema = make(chan struct{}, 30)
@@ -165,21 +177,66 @@ func ParseGz(ctx context.Context, r io.Reader, w io.Writer, query Query) error {
 		return fmt.Errorf("failed to open gzip reader: %w", err)
 	}
 	defer gzr.Close()
+	sc := bufio.NewScanner(gzr)
 
 	bufw := bufio.NewWriter(w)
 	defer bufw.Flush()
 	lz4w := lz4.NewWriter(bufw)
 	defer lz4w.Close()
 
-	switch query.N {
-	case 1:
-		return ParseGzOneGram(ctx, gzr, lz4w, query)
-	default:
-		return ParseGzNGram(ctx, gzr, lz4w, query)
+	record := OneGramRecord{}
+
+	for sc.Scan() {
+		word, score, err := ParseRecord(ctx, sc.Text())
+		if err != nil {
+			continue
+		}
+		if word != record.Word {
+			if err := WriteRecord(ctx, w, record.Word, record.Score); err != nil {
+				return fmt.Errorf("failed to parse: %w", err)
+			}
+			record = OneGramRecord{Word: word}
+		}
+		record.Score += score
 	}
+	if sc.Err() != nil {
+		return fmt.Errorf("failed to parse: %w", sc.Err())
+	}
+	if record.Score != 0 {
+		if err := WriteRecord(ctx, w, record.Word, record.Score); err != nil {
+			return fmt.Errorf("failed to parse: %w", err)
+		}
+	}
+
+	return nil
 }
 
-func ParseGzOneGram(ctx context.Context, r io.Reader, w io.Writer, query Query) error {
+func ParseRecord(ctx context.Context, line string) (words string, score int64, err error) {
+	elems := strings.Split(line, "\t")
+	words = elems[0]
+	if reg.MatchString(words) {
+		err = fmt.Errorf("invalid word: %w", err)
+		return
+	}
+	score = 0
+	for i := 1; i < len(elems); i++ {
+		triple := strings.Split(elems[i], ",")
+		var sco int64
+		sco, err = strconv.ParseInt(triple[1], 10, 64)
+		if err != nil {
+			err = fmt.Errorf("failed to parse score: %w", err)
+			return
+		}
+		score += sco
+	}
+	return
+}
+
+func WriteRecord(ctx context.Context, w io.Writer, words string, score int64) error {
+	_, err := fmt.Fprintf(w, "%s\t%d\n", words, score)
+	if err != nil {
+		return fmt.Errorf("failed to write record: %w", err)
+	}
 	return nil
 }
 
@@ -190,6 +247,22 @@ func ParseGzNGram(ctx context.Context, r io.Reader, w io.Writer, query Query) er
 func Save(ctx context.Context, conn *gorm.DB, r io.Reader) error {
 	saveSema <- struct{}{}
 	defer func() { <-saveSema }()
+
+	bufr := bufio.NewReader(r)
+	lz4r := lz4.NewReader(bufr)
+	sc := bufio.NewScanner(lz4r)
+
+	for sc.Scan() {
+		elems := strings.Split(sc.Text(), "\t")
+		words := strings.Split(elems[0], " ")
+		score, err := strconv.Atoi(elems[1])
+		if err != nil {
+			return fmt.Errorf("failed to save: %w", err)
+		}
+	}
+	if err := sc.Err; err != nil {
+		return fmt.Errorf("failed to save: %w", err)
+	}
 
 	return nil
 }
@@ -207,7 +280,7 @@ func TotalFileNum(n int) int {
 	case 5:
 		return 19423
 	}
-	log.Panic("invalid n: %v", n)
+	log.Panicf("invalid n: %v", n)
 	return 0
 }
 
