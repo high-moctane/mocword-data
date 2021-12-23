@@ -1,6 +1,6 @@
 package mocword
 
-type FetchedFile struct {
+type Query struct {
 	N   int `gorm:"primaryKey"`
 	Idx int `gorm:"primaryKey"`
 }
