@@ -1,1 +1,3 @@
 cmd/mocword_download/mocword_download
+*.sqlite
+*.sqlite-journal
