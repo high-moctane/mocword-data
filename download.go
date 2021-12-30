@@ -9,16 +9,21 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/cenkalti/backoff"
 	"github.com/pierrec/lz4"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
+var sema = make(chan struct{}, 30)
 var dlSema = make(chan struct{}, 2)
 var parseSema = make(chan struct{}, 30)
 var saveSema = make(chan struct{}, 1)
@@ -28,6 +33,9 @@ type Cache map[string]int64
 const cacheOffset = 10000
 
 func RunDownload(ctx context.Context) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	conn, err := NewConn()
 	if err != nil {
 		return fmt.Errorf("failed to open conn: %w", err)
@@ -56,7 +64,9 @@ func RunDownload(ctx context.Context) error {
 }
 
 func NewConn() (*gorm.DB, error) {
-	conn, err := gorm.Open(sqlite.Open("file:data.sqlite?cache=shared"), &gorm.Config{})
+	conn, err := gorm.Open(sqlite.Open("file:data.sqlite?cache=shared"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open conn: %w", err)
 	}
@@ -70,6 +80,9 @@ func NewConn() (*gorm.DB, error) {
 }
 
 func Migrate(ctx context.Context, conn *gorm.DB) error {
+	log.Println("start: migrate")
+	defer log.Println("end  : migrate")
+
 	conn.WithContext(ctx).AutoMigrate(&Query{})
 	conn.WithContext(ctx).AutoMigrate(&OneGramRecord{})
 	conn.WithContext(ctx).AutoMigrate(&TwoGramRecord{})
@@ -80,6 +93,9 @@ func Migrate(ctx context.Context, conn *gorm.DB) error {
 }
 
 func DownloadAndSaveAll(ctx context.Context, conn *gorm.DB, n int, cache Cache) error {
+	log.Printf("start: download and save all %v", n)
+	defer log.Printf("end  : download and save all %v", n)
+
 	var wg sync.WaitGroup
 
 	for idx := 0; idx < TotalFileNum(n); idx++ {
@@ -94,17 +110,38 @@ func DownloadAndSaveAll(ctx context.Context, conn *gorm.DB, n int, cache Cache) 
 		}(idx)
 	}
 
+	wg.Wait()
+
 	return nil
 }
 
 func DownloadAndSave(ctx context.Context, conn *gorm.DB, query Query, cache Cache) error {
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	sema <- struct{}{}
+	defer func() { <-sema }()
+
+	// log.Printf("start: download and save %v", query)
+	// defer log.Printf("end  : download and save %v", query)
+
+	fetched, err := IsFetched(ctx, conn, query)
+	if err != nil {
+		return fmt.Errorf("failed to download and save: %w", err)
+	}
+	if fetched {
+		return nil
+	}
+
 	// Download
 	gzFile, err := os.CreateTemp("", "gz")
 	if err != nil {
 		return fmt.Errorf("failed to create temp gz file: %w", err)
 	}
 	defer os.Remove(gzFile.Name())
-	defer gzFile.Close()
 
 	if err := RetryDownload(ctx, query, gzFile); err != nil {
 		return fmt.Errorf("failed to download: %w", err)
@@ -116,7 +153,6 @@ func DownloadAndSave(ctx context.Context, conn *gorm.DB, query Query, cache Cach
 		return fmt.Errorf("failed to create parsed file: %w", err)
 	}
 	defer os.Remove(parsedFile.Name())
-	defer parsedFile.Close()
 
 	if err := ParseGz(ctx, gzFile, parsedFile, query); err != nil {
 		return fmt.Errorf("failed to parse gz: %w", err)
@@ -144,6 +180,15 @@ func RetryDownload(ctx context.Context, query Query, gzFile *os.File) error {
 func Download(ctx context.Context, query Query, gzFile *os.File) error {
 	dlSema <- struct{}{}
 	defer func() { <-dlSema }()
+
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	log.Printf("start: download %v", query)
+	defer log.Printf("end  : download %v", query)
 
 	defer gzFile.Seek(0, 0)
 
@@ -183,6 +228,15 @@ func ParseGz(ctx context.Context, gzFile, parsedFile *os.File, query Query) erro
 	parseSema <- struct{}{}
 	defer func() { <-parseSema }()
 
+	select {
+	case <-ctx.Done():
+		return nil
+	default:
+	}
+
+	log.Printf("start: parse gz %v", query)
+	defer log.Printf("end  : parse gz %v", query)
+
 	defer parsedFile.Seek(0, 0)
 
 	bufr := bufio.NewReader(gzFile)
@@ -201,6 +255,12 @@ func ParseGz(ctx context.Context, gzFile, parsedFile *os.File, query Query) erro
 	record := Record{}
 
 	for sc.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
 		newRecord, err := ParseRecord(ctx, sc.Text())
 		if err != nil {
 			continue
@@ -229,7 +289,7 @@ func ParseGz(ctx context.Context, gzFile, parsedFile *os.File, query Query) erro
 func ParseRecord(ctx context.Context, line string) (rec Record, err error) {
 	elems := strings.Split(line, "\t")
 	rec.words = elems[0]
-	if strings.Contains(rec.words, "_") {
+	if len(rec.words) == 0 || strings.Contains(rec.words, "_") {
 		err = fmt.Errorf("invalid word: %w", err)
 		return
 	}
@@ -246,15 +306,19 @@ func ParseRecord(ctx context.Context, line string) (rec Record, err error) {
 	return
 }
 
-func WriteRecord(ctx context.Context, w io.Writer, rec Record) error {
-	_, err := w.Write([]byte(rec.String()))
-	if err != nil {
-		return fmt.Errorf("failed to write record: %w", err)
-	}
-	return nil
+var reg = regexp.MustCompile(`\pP`)
+
+func IsValidWords(s string) bool {
+	return true &&
+		len(s) > 0 &&
+		!reg.MatchString(s) &&
+		true
 }
 
-func ParseGzNGram(ctx context.Context, r io.Reader, w io.Writer, query Query) error {
+func WriteRecord(ctx context.Context, w io.Writer, rec Record) error {
+	if _, err := w.Write([]byte(rec.String() + "\n")); err != nil {
+		return fmt.Errorf("failed to write record: %w", err)
+	}
 	return nil
 }
 
@@ -262,24 +326,44 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 	saveSema <- struct{}{}
 	defer func() { <-saveSema }()
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	log.Printf("start: save %v", query)
+	defer log.Printf("end  : save %v", query)
+
 	bufr := bufio.NewReader(r)
 	lz4r := lz4.NewReader(bufr)
 	sc := bufio.NewScanner(lz4r)
 
 	conn.WithContext(ctx).Transaction(func(conn *gorm.DB) error {
 		for sc.Scan() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
 			elems := strings.Split(sc.Text(), "\t")
 			words := strings.Split(elems[0], " ")
 			score, err := strconv.ParseInt(elems[1], 10, 64)
 			if err != nil {
 				return fmt.Errorf("invalid score: %w", err)
 			}
-
-			var val interface{}
+			if len(words[0]) == 0 || score == 0 {
+				continue
+			}
 
 			switch len(words) {
 			case 1:
-				val = OneGramRecord{Word: words[0], Score: score}
+				val := OneGramRecord{Word: words[0], Score: score}
+				res := conn.Create(&val)
+				if res.Error != nil {
+					return fmt.Errorf("failed to save: %w", res.Error)
+				}
 			case 2:
 				word1, ok := cache[words[0]]
 				if !ok {
@@ -289,7 +373,11 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val = TwoGramRecord{word1, word2, score}
+				val := TwoGramRecord{word1, word2, score}
+				res := conn.Create(&val)
+				if res.Error != nil {
+					return fmt.Errorf("failed to save: %w", res.Error)
+				}
 			case 3:
 				word1, ok := cache[words[0]]
 				if !ok {
@@ -303,7 +391,11 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val = ThreeGramRecord{word1, word2, word3, score}
+				val := ThreeGramRecord{word1, word2, word3, score}
+				res := conn.Create(&val)
+				if res.Error != nil {
+					return fmt.Errorf("failed to save: %w", res.Error)
+				}
 			case 4:
 				word1, ok := cache[words[0]]
 				if !ok {
@@ -321,7 +413,11 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val = FourGramRecord{word1, word2, word3, word4, score}
+				val := FourGramRecord{word1, word2, word3, word4, score}
+				res := conn.Create(&val)
+				if res.Error != nil {
+					return fmt.Errorf("failed to save: %w", res.Error)
+				}
 			case 5:
 				word1, ok := cache[words[0]]
 				if !ok {
@@ -343,21 +439,21 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val = FiveGramRecord{word1, word2, word3, word4, word5, score}
+				val := FiveGramRecord{word1, word2, word3, word4, word5, score}
+				res := conn.Create(&val)
+				if res.Error != nil {
+					return fmt.Errorf("failed to save: %w", res.Error)
+				}
 			default:
 				log.Panicf("invalid words: %s", words)
 			}
 
-			res := conn.Save(val)
-			if res.Error != nil {
-				return fmt.Errorf("failed to save: %w", res.Error)
-			}
 		}
 		if err := sc.Err(); err != nil {
 			return fmt.Errorf("failed to save: %w", err)
 		}
 
-		res := conn.Save(query)
+		res := conn.Save(&query)
 		if res.Error != nil {
 			return fmt.Errorf("failed to save: %w", res.Error)
 		}
@@ -380,8 +476,9 @@ func TotalFileNum(n int) int {
 		return 6668
 	case 5:
 		return 19423
+	default:
+		log.Panicf("invalid n: %v", n)
 	}
-	log.Panicf("invalid n: %v", n)
 	return 0
 }
 
@@ -395,6 +492,11 @@ func FileURL(n, idx int) string {
 }
 
 func FetchOneGramCache(ctx context.Context, conn *gorm.DB) (cache Cache, err error) {
+	log.Println("start: make cache")
+	defer log.Println("end  : make cache")
+
+	cache = make(Cache)
+
 	start := 0
 	end := start + cacheOffset
 
@@ -423,4 +525,13 @@ func FetchOneGramCache(ctx context.Context, conn *gorm.DB) (cache Cache, err err
 	}
 
 	return
+}
+
+func IsFetched(ctx context.Context, conn *gorm.DB, query Query) (bool, error) {
+	var vals []Query
+	res := conn.
+		WithContext(ctx).
+		Find(&vals, "n = ? and idx = ?", query.N, query.Idx)
+
+	return len(vals) > 0, res.Error
 }
