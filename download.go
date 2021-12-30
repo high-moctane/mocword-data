@@ -376,7 +376,7 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val := TwoGramRecord{word1, word2, score}
+				val := TwoGramRecord{Word1: word1, Word2: word2, Score: score}
 				res := conn.Create(&val)
 				if res.Error != nil {
 					return fmt.Errorf("failed to save: %w", res.Error)
@@ -394,7 +394,7 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val := ThreeGramRecord{word1, word2, word3, score}
+				val := ThreeGramRecord{Word1: word1, Word2: word2, Word3: word3, Score: score}
 				res := conn.Create(&val)
 				if res.Error != nil {
 					return fmt.Errorf("failed to save: %w", res.Error)
@@ -416,7 +416,7 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val := FourGramRecord{word1, word2, word3, word4, score}
+				val := FourGramRecord{Word1: word1, Word2: word2, Word3: word3, Word4: word4, Score: score}
 				res := conn.Create(&val)
 				if res.Error != nil {
 					return fmt.Errorf("failed to save: %w", res.Error)
@@ -442,7 +442,7 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 				if !ok {
 					continue
 				}
-				val := FiveGramRecord{word1, word2, word3, word4, word5, score}
+				val := FiveGramRecord{Word1: word1, Word2: word2, Word3: word3, Word4: word4, Word5: word5, Score: score}
 				res := conn.Create(&val)
 				if res.Error != nil {
 					return fmt.Errorf("failed to save: %w", res.Error)
