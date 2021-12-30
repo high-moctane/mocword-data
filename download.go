@@ -359,6 +359,9 @@ func Save(ctx context.Context, conn *gorm.DB, r io.Reader, query Query, cache Ca
 
 			switch len(words) {
 			case 1:
+				if score < 1000 {
+					continue
+				}
 				val := OneGramRecord{Word: words[0], Score: score}
 				res := conn.Create(&val)
 				if res.Error != nil {
