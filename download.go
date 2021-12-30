@@ -306,7 +306,7 @@ func ParseRecord(ctx context.Context, line string) (rec Record, err error) {
 	return
 }
 
-var reg = regexp.MustCompile(`\pP`)
+var reg = regexp.MustCompile(`(?:^\pP|_)`)
 
 func IsValidWords(s string) bool {
 	return true &&
