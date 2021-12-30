@@ -23,9 +23,9 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var sema = make(chan struct{}, 30)
+var sema = make(chan struct{}, 10)
 var dlSema = make(chan struct{}, 2)
-var parseSema = make(chan struct{}, 30)
+var parseSema = make(chan struct{}, 10)
 var saveSema = make(chan struct{}, 1)
 
 type Cache map[string]int64
@@ -289,7 +289,7 @@ func ParseGz(ctx context.Context, gzFile, parsedFile *os.File, query Query) erro
 func ParseRecord(ctx context.Context, line string) (rec Record, err error) {
 	elems := strings.Split(line, "\t")
 	rec.words = elems[0]
-	if len(rec.words) == 0 || strings.Contains(rec.words, "_") {
+	if !IsValidWords(rec.words) {
 		err = fmt.Errorf("invalid word: %w", err)
 		return
 	}
