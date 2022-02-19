@@ -1,0 +1,15 @@
+Mocword-data
+Copyright 2022 high-moctane
+
+mocword.sqlite is a remixed data from Google Books Ngram Viewer English Version
+20200217.
+
+------------------------------------------------------------
+Google Ngram Viewer English Version 20200217
+------------------------------------------------------------
+
+Google Ngram Viewer English Version 20200217 provided by Google LLC.
+URL: http://storage.googleapis.com/books/ngrams/books/datasetsv3.html
+License: Creative Commons Attribution 3.0 Unported License
+(http://creativecommons.org/licenses/by/3.0/)
+The data is modified by mocword-data toolset (https://github.com/high-moctane/mocword-data).
